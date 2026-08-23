@@ -22,3 +22,13 @@ var FlagCompactSendThresholds = featureflags.Register(featureflags.Flag{
 	Description: "Default the composer to Compact and send once the context reaches 200k tokens.",
 	Default:     false,
 })
+
+// FlagPatchSimple forces the simplified single-modification patch schema for
+// models without native apply_patch: a single modification per call (one
+// exact-text replace or one EOF append), overriding per-model auto-selection.
+// Capable OpenAI Responses models use native apply_patch regardless of this flag.
+var FlagPatchSimple = featureflags.Register(featureflags.Flag{
+	Name:        "patch-simple",
+	Description: "For models without native apply_patch, use a simplified single-modification schema (one exact-text replace or one EOF append per call), overriding per-model auto-selection.",
+	Default:     false,
+})

@@ -665,9 +665,15 @@ func TestNewToolSetPatchStrategy(t *testing.T) {
 				if err := json.Unmarshal(patch.InputSchema, &schema); err != nil {
 					t.Fatal(err)
 				}
-				_, hasEdits := schema.Properties["edits"]
-				if hasEdits != tt.simple {
-					t.Fatalf("edits present = %v, want %v", hasEdits, tt.simple)
+				if _, ok := schema.Properties["patches"]; ok {
+					t.Fatal("patch schema must be flat (one modification per call)")
+				}
+				if tt.simple {
+					if _, ok := schema.Properties["oldText"]; !ok {
+						t.Fatal("simple schema missing top-level oldText")
+					}
+				} else if _, ok := schema.Properties["operation"]; !ok {
+					t.Fatal("complex schema missing top-level operation")
 				}
 				if _, hasPatches := schema.Properties["patches"]; hasPatches == tt.simple {
 					t.Fatalf("patches present = %v, want %v", hasPatches, !tt.simple)
@@ -679,16 +685,21 @@ func TestNewToolSetPatchStrategy(t *testing.T) {
 
 func TestNewToolSetPatchStrategyUnsupportedService(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		provider LLMServiceProvider
+		name, property string
+		simple         bool
+		provider       LLMServiceProvider
+		model          string
 	}{
-		{name: "no provider"},
-		{name: "unknown service", provider: &mockLLMProvider{}},
+		{name: "complex", property: "operation", provider: &mockLLMProvider{}, model: "test-model"},
+		{name: "simple", property: "oldText", simple: true, provider: &mockLLMProvider{}, model: "test-model"},
+		{name: "no provider", property: "operation", model: "glm-looking-alias"},
+		{name: "unknown service", property: "operation", provider: &mockLLMProvider{}, model: "glm-looking-alias"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ts := NewToolSet(t.Context(), ToolSetConfig{
-				LLMProvider: tt.provider,
-				ModelID:     "glm-looking-alias",
+				LLMProvider:        tt.provider,
+				ModelID:            tt.model,
+				PatchSimpleEnabled: func() bool { return tt.simple },
 			})
 			defer ts.Cleanup()
 			for _, tool := range ts.Tools() {
@@ -702,8 +713,13 @@ func TestNewToolSetPatchStrategyUnsupportedService(t *testing.T) {
 					if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
 						t.Fatal(err)
 					}
-					if _, ok := schema.Properties["patches"]; !ok {
-						t.Fatal("unsupported service missing nested patch schema")
+					if _, ok := schema.Properties[tt.property]; !ok {
+						t.Fatalf("unsupported service missing %q patch schema", tt.property)
+					}
+					for _, flat := range []string{"patches", "edits"} {
+						if _, ok := schema.Properties[flat]; ok {
+							t.Fatalf("unsupported service schema must be flat, found %q", flat)
+						}
 					}
 					return
 				}

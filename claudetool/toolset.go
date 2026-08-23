@@ -54,7 +54,10 @@ type ToolSetConfig struct {
 	EnableBrowser bool
 	// ModelID is the model being used for this conversation.
 	ModelID string
-
+	// PatchSimpleEnabled forces the simplified single-modification schema,
+	// overriding per-model auto-selection (which picks "simple" for glm*
+	// models and the one-operation schema otherwise).
+	PatchSimpleEnabled func() bool
 	// ReasoningLevel is the parent conversation's user-facing reasoning/thinking
 	// level (one of "off", "minimal", "low", "medium", "high", "xhigh", or ""
 	// for the service default). Subagents inherit this when their "reasoning"
@@ -216,6 +219,11 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			patchProvider = svc.Provider()
 			patchProfile = llm.PatchProfile(svc)
 		}
+	}
+	// The patch-simple flag overrides auto-selection: force the simplified
+	// single-modification schema for models without native apply_patch.
+	if cfg.PatchSimpleEnabled != nil && cfg.PatchSimpleEnabled() {
+		patchProfile = "simple"
 	}
 	patchTool := &PatchTool{WorkingDir: wd, Provider: patchProvider, Profile: patchProfile}
 
