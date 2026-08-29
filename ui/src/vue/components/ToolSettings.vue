@@ -4,14 +4,25 @@
 <template>
   <div class="advanced-settings-header">
     <h3 class="profiles-section-title">Tools</h3>
-    <button
-      type="button"
-      class="advanced-settings-reset"
-      :disabled="Object.keys(overrides).length === 0"
-      @click="overrides = {}"
-    >
-      Reset to defaults
-    </button>
+    <div class="advanced-settings-actions">
+      <button
+        type="button"
+        class="advanced-settings-reset"
+        :disabled="tools.length === 0"
+        v-tooltip.top="'Set every tool to off'"
+        @click="allToolsOff"
+      >
+        All off
+      </button>
+      <button
+        type="button"
+        class="advanced-settings-reset"
+        :disabled="Object.keys(overrides).length === 0"
+        @click="overrides = {}"
+      >
+        Reset to defaults
+      </button>
+    </div>
   </div>
   <div class="auto-compaction-row" data-testid="auto-compaction">
     <span class="auto-compaction-name">{{ t("autoCompaction") }}</span>
@@ -92,6 +103,11 @@ function setOverride(name: string, value: "default" | "on" | "off") {
   if (value === "default") delete next[name];
   else next[name] = value;
   overrides.value = next;
+}
+
+// allToolsOff sets every tool (auto compaction included) to off in one go.
+function allToolsOff() {
+  overrides.value = Object.fromEntries(props.tools.map((t) => [t.name, "off"]));
 }
 
 function setNudge(n: number) {
