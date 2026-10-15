@@ -54,18 +54,21 @@ test.describe("running work", () => {
       await expect(toggle).not.toContainText("Running:");
       await expect(strip.getByTestId("running-work-stop-jobs")).toBeEnabled();
       await expect(strip.getByTestId("running-work-stop-subagents")).toBeDisabled();
-      // Two tasks start expanded without a click.
+      // More than one task starts collapsed; the count waits in the header.
       const items = strip.getByTestId("running-work-items");
-      await expect(items).toBeVisible();
-      const jobs = items.getByTestId("background-job");
-      await expect(jobs).toHaveCount(2);
-      await expect(jobs.filter({ hasText: "echo ready" })).toBeVisible();
-      await expect(jobs.filter({ hasText: "sleep 601" })).toBeVisible();
+      await expect(items).toHaveCount(0);
       expect(
         await strip.evaluate((element) =>
           element.nextElementSibling?.classList.contains("messages-bottom-sentinel"),
         ),
       ).toBe(true);
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      const jobs = items.getByTestId("background-job");
+      await expect(jobs).toHaveCount(2);
+      await expect(jobs.filter({ hasText: "echo ready" })).toBeVisible();
+      await expect(jobs.filter({ hasText: "sleep 601" })).toBeVisible();
 
       const scroller = page.locator(".messages-container");
       await scroller.evaluate((element) => {
@@ -88,7 +91,7 @@ test.describe("running work", () => {
         )
         .toBe(true);
 
-      // The user can still collapse and re-expand; the reading position holds.
+      // The user can collapse and re-expand; the reading position holds.
       await toggle.evaluate((element) => {
         element.dispatchEvent(new Event("touchstart", { bubbles: true }));
         (element as HTMLElement).click();
@@ -246,13 +249,15 @@ test.describe("running work", () => {
       const strip = page.getByLabel("Running work", { exact: true });
       const toggle = strip.getByTestId("running-work-toggle");
       await expect(toggle).toContainText("3 subagents", { timeout: 30000 });
-      await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      const rows = strip.locator(".running-work-agent");
-      await expect(rows).toHaveCount(3);
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
       // No background commands are running, so that button is greyed out.
       await expect(strip.getByTestId("running-work-stop-jobs")).toBeDisabled();
       const stopSubagents = strip.getByTestId("running-work-stop-subagents");
       await expect(stopSubagents).toBeEnabled();
+
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(3);
 
       const subagents = await (
         await request.get(`/api/conversation/${conversationId}/subagents`)
@@ -269,9 +274,11 @@ test.describe("running work", () => {
         rows.filter({ hasText: "secondhelper" }).locator(".running-work-agent-time"),
       ).toContainText("Running");
 
-      // One click stops the rest; with nothing running the strip then hides
-      // itself (the Finished-row transient is pinned above via firsthelper).
+      // One click stops the rest. The user expanded the strip earlier, so it
+      // stays open showing "No running work" until they collapse it.
       await stopSubagents.click();
+      await expect(toggle).toContainText("No running work", { timeout: 15000 });
+      await toggle.click();
       await expect(strip).toHaveCount(0, { timeout: 15000 });
     } finally {
       await stopWork(request, [conversationId]);
@@ -299,11 +306,16 @@ test.describe("running work", () => {
       const toggle = strip.getByTestId("running-work-toggle");
       await expect(toggle).toContainText("1 task", { timeout: 30000 });
       await expect(toggle).toContainText("1 subagent");
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(strip.getByTestId("running-work-stop-jobs")).toBeEnabled();
       await expect(strip.getByTestId("running-work-stop-subagents")).toBeEnabled();
 
-      await strip.getByTestId("running-work-stop-jobs").click();
+      // Expand, then stop the commands: the job row flips to Finished and
+      // stays, the subagent keeps running.
+      await toggle.click();
       const jobRow = strip.getByTestId("background-job").filter({ hasText: "echo ready" });
+      await expect(jobRow).toBeVisible();
+      await strip.getByTestId("running-work-stop-jobs").click();
       await expect(jobRow.locator(".running-command-time")).toHaveText("Finished", {
         timeout: 15000,
       });
@@ -311,13 +323,19 @@ test.describe("running work", () => {
         strip.locator(".running-work-agent").locator(".running-work-agent-time"),
       ).toContainText("Running");
 
-      // The lone subagent keeps the strip alive; cancelling it hides the strip.
+      // The lone subagent keeps the strip alive; cancelling it marks the row
+      // Finished and the open strip persists until the user collapses it.
       const subagents = await (
         await request.get(`/api/conversation/${conversationId}/subagents`)
       ).json();
       for (const sub of subagents) {
         await request.post(`/api/conversation/${sub.conversation_id}/cancel`);
       }
+      await expect(
+        strip.locator(".running-work-agent").locator(".running-work-agent-time"),
+      ).toHaveText("Finished", { timeout: 15000 });
+      await expect(toggle).toContainText("No running work");
+      await toggle.click();
       await expect(strip).toHaveCount(0, { timeout: 15000 });
     } finally {
       await stopWork(request, [conversationId]);

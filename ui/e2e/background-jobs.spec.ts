@@ -34,8 +34,8 @@ test("running work exposes live output in native details and stops the command",
   await expect(job).not.toContainText("PGID");
   await expect(job).not.toContainText(".log");
 
-  // A second task grows the compact header, and the strip stays expanded
-  // without a click.
+  // A second task grows the compact header, collapsed by default; open it
+  // for the row flow.
   expect(
     (
       await request.post(`/api/conversation/${conversationId}/chat`, {
@@ -45,12 +45,18 @@ test("running work exposes live output in native details and stops the command",
   ).toBe(true);
   const toggle = strip.getByTestId("running-work-toggle");
   await expect(toggle).toContainText("2 tasks", { timeout: 15000 });
+  // More than one task starts collapsed; open it for the row flow.
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(strip.getByTestId("background-job")).toHaveCount(2);
 
   // Stopping the first job keeps it visible (Finished) while the second
-  // runs, and the single remaining task drops the header again.
+  // runs, and the single remaining task drops the header again. The
+  // collapse/expand cycle remounted the rows, so open the row's details
+  // afresh to reach its stop button.
   const first = strip.getByTestId("background-job").filter({ hasText: "echo ready" });
+  await first.locator("summary").click();
   await first.getByTestId("background-job-kill").click();
   await expect(toggle).toHaveCount(0, { timeout: 15000 });
   await expect(first.locator(".running-command-time")).toHaveText("Finished");
@@ -59,9 +65,13 @@ test("running work exposes live output in native details and stops the command",
   const second = strip.getByTestId("background-job").filter({ hasText: "sleep 601" });
   await expect(second.locator(".running-command-time")).toContainText("Running");
 
-  // Stopping the last task hides the strip; the finish notice lands in chat.
+  // Stopping the last task empties the strip; the hand-opened strip stays
+  // showing "No running work" until collapsed, and the finish notices land
+  // in chat.
   await second.locator("summary").click();
   await second.getByTestId("background-job-kill").click();
+  await expect(toggle).toContainText("No running work", { timeout: 15000 });
+  await toggle.click();
   await expect(strip).toHaveCount(0, { timeout: 15000 });
   await expect(running).toBeHidden({ timeout: 15000 });
   const notice = page.getByTestId("bash-tool-finished-job").first();

@@ -186,13 +186,12 @@ Nothing is upstreamed from here; all customizations live on this fork's
   tool by hops walked up the parent chain.
 - `test: read client2's SSE replay to completion` — the fork-only test
   robustness fix above.
-- `ui: running-work strip expands by default with regime-based chrome` —
+- `ui: running-work strip renders one task directly, collapses the rest` —
   the running-work strip picks its presentation by row count (running
   jobs + running subagents): one row renders directly with no toggle
-  header; two to four rows start expanded behind a compact 6px header;
-  more than four start collapsed with the count. A user toggle always
-  beats the default afterwards, and background job rows read
-  `bash <command> Running · 5m` — tool name, command and runtime on one
+  header; more than one starts collapsed behind a compact 6px header
+  showing the count. A user toggle opens it; background job rows read
+  `bash <command> Running · 5m` — tool name, command, runtime on one
   line.
 - `ui: running-work header gains stop-all buttons` — with more than one
   task or subagent running, the strip's header carries "Stop commands"
