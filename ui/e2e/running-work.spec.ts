@@ -171,6 +171,8 @@ test.describe("running work", () => {
       "hello there",
     );
     try {
+      // One job per agent turn. Posts sent while a turn runs are queued and
+      // drain nondeterministically, so wait each turn out before the next.
       for (const n of [1, 2, 3, 4, 5]) {
         expect(
           (
@@ -179,6 +181,12 @@ test.describe("running work", () => {
             })
           ).ok(),
         ).toBe(true);
+        await expect
+          .poll(async () => {
+            const body = await (await request.get(`/api/conversation/${conversationId}`)).json();
+            return body.conversation.agent_working;
+          })
+          .toBe(false);
       }
 
       await page.goto(`/c/${slug}`);
