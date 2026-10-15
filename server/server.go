@@ -1025,8 +1025,14 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 
 		config := s.toolSetConfig
 		if role != roleTopLevel {
-			// Only top-level conversations can spawn subagents.
-			config.SubagentDepth++
+			// Depth counts parent hops from a top-level row: a subagent is
+			// 1, a subagent's subagent 2, and so on. MaxSubagentDepth then
+			// caps nesting at any level, not just top-level vs child.
+			depth, err := s.subagentDepth(ctx, conversationID)
+			if err != nil {
+				return nil, err
+			}
+			config.SubagentDepth = depth
 		}
 		if role != roleSubagent {
 			config.ParentMessenger = nil
@@ -1077,6 +1083,30 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		return nil, err
 	}
 	return manager, nil
+}
+
+// subagentDepth returns conversationID's nesting depth: 0 for a top-level
+// row, 1 for its child, 2 for a grandchild, and so on, walked hop by hop up
+// the parent chain. A missing row or a parent cycle is an error; the depth is
+// never guessed.
+func (s *Server) subagentDepth(ctx context.Context, conversationID string) (int, error) {
+	depth := 0
+	seen := map[string]bool{conversationID: true}
+	for {
+		conv, err := s.db.GetConversationByID(ctx, conversationID)
+		if err != nil {
+			return 0, fmt.Errorf("load conversation %s for subagent depth: %w", conversationID, err)
+		}
+		if conv.ParentConversationID == nil {
+			return depth, nil
+		}
+		depth++
+		conversationID = *conv.ParentConversationID
+		if seen[conversationID] {
+			return 0, fmt.Errorf("parent cycle through %s while walking subagent depth", conversationID)
+		}
+		seen[conversationID] = true
+	}
 }
 
 // ExtractDisplayData extracts display data from message content for storage
