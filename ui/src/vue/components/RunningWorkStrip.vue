@@ -1,6 +1,8 @@
 <template>
-  <section v-if="count > 0 || open" class="running-work" aria-label="Running work">
+  <section v-if="itemCount > 0 || open" class="running-work" aria-label="Running work">
+    <!-- One row renders by itself; only two or more grow the toggle header. -->
     <button
+      v-if="!single"
       type="button"
       class="running-work-toggle"
       data-testid="running-work-toggle"
@@ -8,9 +10,9 @@
       :aria-controls="`running-work-${conversationId}`"
       @click="toggleWork"
     >
-      <span v-if="count > 0" class="running-work-dot" aria-hidden="true" />
+      <span v-if="itemCount > 0" class="running-work-dot" aria-hidden="true" />
       <span class="running-work-count">
-        <span v-if="count === 0">No running work</span>
+        <span v-if="itemCount === 0">No running work</span>
         <span v-if="jobCount > 0">{{ jobCount }} task{{ jobCount === 1 ? "" : "s" }}</span>
         <span
           v-if="jobCount > 0 && subagents.length > 0"
@@ -27,7 +29,7 @@
       </span>
     </button>
     <div
-      v-if="open"
+      v-if="expanded"
       :id="`running-work-${conversationId}`"
       class="running-work-items"
       data-testid="running-work-items"
@@ -79,9 +81,30 @@ const runningSubagentIds = computed(
   () => new Set(subagents.value.map((sub) => sub.conversation_id)),
 );
 
-const count = computed(() => jobCount.value + subagents.value.length);
+// Rows the strip can show: running background jobs plus running subagents.
+const itemCount = computed(() => jobCount.value + subagents.value.length);
+
+// A single row renders directly, without the toggle header.
+const single = computed(() => itemCount.value === 1);
+
+// Two to four rows start expanded; more than four start collapsed with the
+// header showing the count instead. The user's own toggle always wins over
+// the default once they have used it.
+const userToggled = ref(false);
+watch(
+  () => itemCount.value > 0 && itemCount.value <= 4,
+  (defaultOpen) => {
+    if (userToggled.value || open.value === defaultOpen) return;
+    open.value = defaultOpen;
+    emit("toggle"); // the strip grew or shrank — follow it when pinned to bottom
+  },
+  { immediate: true },
+);
+
+const expanded = computed(() => single.value || open.value);
 
 function toggleWork() {
+  userToggled.value = true;
   open.value = !open.value;
   emit("toggle");
 }
@@ -92,8 +115,8 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
   return [...items.values()];
 }
 
-watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
-  if (!expanded) {
+watch([expanded, subagents, backgroundJobs.jobs], ([isExpanded, agents, jobs]) => {
+  if (!isExpanded) {
     seenSubagents.value = [];
     seenJobs.value = [];
     return;
@@ -125,7 +148,8 @@ watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
   align-items: center;
   gap: 9px;
   width: 100%;
-  padding: 11px 14px;
+  /* A thin strip: the rows below are the content, the header just counts. */
+  padding: 6px 14px;
   border: 0;
   background: transparent;
   color: var(--text-primary);
@@ -171,7 +195,10 @@ watch([open, subagents, backgroundJobs.jobs], ([expanded, agents, jobs]) => {
 }
 
 .running-work-items {
-  border-top: 1px solid var(--border);
   background: var(--bg-base);
+}
+
+.running-work-toggle + .running-work-items {
+  border-top: 1px solid var(--border);
 }
 </style>

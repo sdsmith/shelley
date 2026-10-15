@@ -10,8 +10,8 @@
       data-testid="background-job"
     >
       <summary>
+        <span class="running-command-tool">bash</span>
         <span class="running-command-name" :title="job.command">{{ job.command }}</span>
-        <span class="running-command-kind">Command</span>
         <RunningToolTime
           v-if="runningIds.has(job.job_id)"
           v-slot="{ elapsed }"
@@ -87,7 +87,7 @@ const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => jo
   font-family: var(--font-mono);
 }
 
-.running-command-kind,
+.running-command-tool,
 .running-command-time,
 .running-command-chevron {
   flex-shrink: 0;
@@ -141,11 +141,5 @@ const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => jo
   font-size: var(--font-size-12);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-@media (max-width: 600px) {
-  .running-command-kind {
-    display: none;
-  }
 }
 </style>
