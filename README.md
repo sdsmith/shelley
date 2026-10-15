@@ -194,3 +194,9 @@ Nothing is upstreamed from here; all customizations live on this fork's
   beats the default afterwards, and background job rows read
   `bash <command> Running · 5m` — tool name, command and runtime on one
   line.
+- `ui: running-work header gains stop-all buttons` — with more than one
+  task or subagent running, the strip's header carries "Stop commands"
+  and "Stop subagents"; each stops every live command / cancels every
+  running subagent of its kind and greys out (disabled) when its kind
+  has nothing running. The commands button reads "Stopping…" while
+  every live job sits in the jobs composable's killing set.

@@ -83,6 +83,37 @@ test("running work exposes live output in native details and stops the command",
   await expect(card).not.toContainText(jobId);
 });
 
+test("stops every command from the header at once", async ({ page, request }) => {
+  const { slug, conversationId } = await createConversationViaAPIWithDetails(
+    request,
+    "bash-bg: echo ready; sleep 600",
+  );
+  await page.goto(`/c/${slug}`);
+  await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+  expect(
+    (
+      await request.post(`/api/conversation/${conversationId}/chat`, {
+        data: { message: "bash-bg: sleep 601", model: "predictable" },
+      })
+    ).ok(),
+  ).toBe(true);
+
+  const strip = page.getByLabel("Running work", { exact: true });
+  await expect(strip.getByTestId("running-work-toggle")).toContainText("2 tasks", {
+    timeout: 15000,
+  });
+  await expect(strip.getByTestId("running-work-stop-jobs")).toBeEnabled();
+  // No subagents are running, so that button is greyed out.
+  await expect(strip.getByTestId("running-work-stop-subagents")).toBeDisabled();
+
+  await strip.getByTestId("running-work-stop-jobs").click();
+  // Nothing runs any more, so the strip hides itself and both finish
+  // notices land in chat.
+  await expect(strip).toHaveCount(0, { timeout: 15000 });
+  await expect(page.getByTestId("bash-tool-finished-job")).toHaveCount(2, { timeout: 15000 });
+  await expect(page.getByTestId("bash-tool-finished-job").first()).toHaveText("Failed");
+});
+
 test("historical background job notices render collapsed bash cards", async ({ page, request }) => {
   await page.setViewportSize({ width: 393, height: 851 });
   const { conversationId, slug } = await createConversationViaAPIWithDetails(
