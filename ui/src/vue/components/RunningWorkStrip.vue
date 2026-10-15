@@ -115,21 +115,28 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
   return [...items.values()];
 }
 
-watch([expanded, subagents, backgroundJobs.jobs], ([isExpanded, agents, jobs]) => {
-  if (!isExpanded) {
-    seenSubagents.value = [];
-    seenJobs.value = [];
-    return;
-  }
-  seenSubagents.value = remember(seenSubagents.value, agents, (sub) => sub.conversation_id).sort(
-    (a, b) =>
-      a.created_at.localeCompare(b.created_at) ||
-      a.conversation_id.localeCompare(b.conversation_id),
-  );
-  if (jobs !== null) {
-    seenJobs.value = remember(seenJobs.value, jobs, (job) => job.job_id);
-  }
-});
+// `immediate` matters: mounted mid-run (reload with work already going),
+// `expanded` is true from the first evaluation and would otherwise never
+// fire, leaving the header counting rows it never renders.
+watch(
+  [expanded, subagents, backgroundJobs.jobs],
+  ([isExpanded, agents, jobs]) => {
+    if (!isExpanded) {
+      seenSubagents.value = [];
+      seenJobs.value = [];
+      return;
+    }
+    seenSubagents.value = remember(seenSubagents.value, agents, (sub) => sub.conversation_id).sort(
+      (a, b) =>
+        a.created_at.localeCompare(b.created_at) ||
+        a.conversation_id.localeCompare(b.conversation_id),
+    );
+    if (jobs !== null) {
+      seenJobs.value = remember(seenJobs.value, jobs, (job) => job.job_id);
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>
