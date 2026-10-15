@@ -108,22 +108,9 @@ const runningSubagentIds = computed(
 // Rows the strip can show: running background jobs plus running subagents.
 const itemCount = computed(() => jobCount.value + subagents.value.length);
 
-// A single row renders directly, without the toggle header.
+// A single row renders directly, without the toggle header; anything more
+// starts collapsed behind the header's count (the user's toggle opens it).
 const single = computed(() => itemCount.value === 1);
-
-// Two to four rows start expanded; more than four start collapsed with the
-// header showing the count instead. The user's own toggle always wins over
-// the default once they have used it.
-const userToggled = ref(false);
-watch(
-  () => itemCount.value > 0 && itemCount.value <= 4,
-  (defaultOpen) => {
-    if (userToggled.value || open.value === defaultOpen) return;
-    open.value = defaultOpen;
-    emit("toggle"); // the strip grew or shrank — follow it when pinned to bottom
-  },
-  { immediate: true },
-);
 
 const expanded = computed(() => single.value || open.value);
 
@@ -160,7 +147,6 @@ function stopAllSubagents() {
 }
 
 function toggleWork() {
-  userToggled.value = true;
   open.value = !open.value;
   emit("toggle");
 }
