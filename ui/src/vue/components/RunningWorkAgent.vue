@@ -91,19 +91,24 @@ function openAgent() {
 .running-work-agent-description {
   flex: 1;
   min-width: 0;
+  /* One line: slug, then the live command/activity beside it. */
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .running-work-agent-description strong {
-  display: block;
+  flex-shrink: 0;
   font-weight: 500;
 }
 
 .running-work-agent-description > span {
-  display: block;
-  margin-top: 4px;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-secondary);
   font-size: var(--font-size-12);
 }
