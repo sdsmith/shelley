@@ -709,12 +709,20 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 	}
 	defer client2.Body.Close()
 
-	// Read response from client2 (should contain both messages since it's a new client)
-	buf2 := make([]byte, 32768)
-	n2, err := client2.Body.Read(buf2)
-	if err != nil && err != io.EOF {
-		t.Fatalf("Failed to read from client2: %v", err)
+	// Read response from client2 (should contain both messages since it's a new client).
+	// The replay frame can exceed one TCP segment — this fork's system prompt
+	// embeds the skills list and tool schemas — so read to completion instead
+	// of assuming one Read returns it whole (same class as c5a542ba).
+	buf2 := make([]byte, 0, 262144)
+	tmp2 := make([]byte, 16384)
+	for {
+		n, err := client2.Body.Read(tmp2)
+		buf2 = append(buf2, tmp2[:n]...)
+		if err == io.EOF || bytes.Contains(buf2, []byte("Hi there!")) {
+			break
+		}
 	}
+	n2 := len(buf2)
 
 	response2 := string(buf2[:n2])
 	t.Logf("Client2 initial response: %s", response2)
