@@ -171,6 +171,8 @@ test.describe("running work", () => {
       const row = strip.locator(".running-work-agent");
       await expect(row).toContainText("statushelper");
       await expect(row).toContainText("sleep", { timeout: 30000 });
+      // The command sits beside the name on one line, not under it.
+      await expect(row.locator(".running-work-agent-description")).toHaveCSS("display", "flex");
       await row.click();
       await expect(page).toHaveURL(/\/c\/statushelper/, { timeout: 10000 });
     } finally {

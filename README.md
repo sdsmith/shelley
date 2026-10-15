@@ -199,3 +199,7 @@ Nothing is upstreamed from here; all customizations live on this fork's
   running subagent of its kind and greys out (disabled) when its kind
   has nothing running. The commands button reads "Stopping…" while
   every live job sits in the jobs composable's killing set.
+- `ui: subagent rows put the live command beside the name` — the
+  running-work strip's subagent rows render one line (`<slug> Agent ·
+  <activity>`, runtime at the right) instead of stacking the activity
+  under the slug, halving the row height.
