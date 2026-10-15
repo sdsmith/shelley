@@ -19,13 +19,14 @@ test("running work exposes live output in native details and stops the command",
   const [{ job_id: jobId }] = await jobsResponse.json();
 
   const strip = page.getByLabel("Running work", { exact: true });
-  await expect(strip.getByTestId("running-work-toggle")).toContainText("1 task", {
-    timeout: 15000,
-  });
-  await strip.getByTestId("running-work-toggle").click();
+  // A single task renders by itself, without the toggle header, on one line:
+  // tool name, command, runtime.
+  await expect(strip.getByTestId("running-work-toggle")).toHaveCount(0);
   const job = strip.getByTestId("background-job");
   await expect(job).toHaveCount(1);
   await expect(job).toContainText("echo ready; sleep 600");
+  await expect(job.locator(".running-command-tool")).toHaveText("bash");
+  await expect(job.locator(".running-command-time")).toContainText("Running");
   await expect(job).not.toHaveAttribute("open", "");
   await job.locator("summary").click();
   await expect(job).toHaveAttribute("open", "");
@@ -33,22 +34,43 @@ test("running work exposes live output in native details and stops the command",
   await expect(job).not.toContainText("PGID");
   await expect(job).not.toContainText(".log");
 
-  await job.getByTestId("background-job-kill").click();
-  await expect(running).toBeHidden({ timeout: 15000 });
-  await expect(strip.getByTestId("running-work-toggle")).toContainText("No running work", {
-    timeout: 15000,
-  });
-  await expect(strip.getByTestId("running-work-toggle")).toHaveAttribute("aria-expanded", "true");
-  await expect(job).toHaveCount(1);
-  await expect(job.locator(".running-command-time")).toHaveText("Finished");
-  await expect(job.getByTestId("background-job-kill")).toHaveCount(0);
-  await expect(job.getByTestId("background-job-tail")).toContainText("ready");
-  await strip.getByTestId("running-work-toggle").click();
+  // A second task grows the compact header, and the strip stays expanded
+  // without a click.
+  expect(
+    (
+      await request.post(`/api/conversation/${conversationId}/chat`, {
+        data: { message: "bash-bg: sleep 601", model: "predictable" },
+      })
+    ).ok(),
+  ).toBe(true);
+  const toggle = strip.getByTestId("running-work-toggle");
+  await expect(toggle).toContainText("2 tasks", { timeout: 15000 });
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(strip.getByTestId("background-job")).toHaveCount(2);
+
+  // Stopping the first job keeps it visible (Finished) while the second
+  // runs, and the single remaining task drops the header again.
+  const first = strip.getByTestId("background-job").filter({ hasText: "echo ready" });
+  await first.getByTestId("background-job-kill").click();
+  await expect(toggle).toHaveCount(0, { timeout: 15000 });
+  await expect(first.locator(".running-command-time")).toHaveText("Finished");
+  await expect(first.getByTestId("background-job-kill")).toHaveCount(0);
+  await expect(first.getByTestId("background-job-tail")).toContainText("ready");
+  const second = strip.getByTestId("background-job").filter({ hasText: "sleep 601" });
+  await expect(second.locator(".running-command-time")).toContainText("Running");
+
+  // Stopping the last task hides the strip; the finish notice lands in chat.
+  await second.locator("summary").click();
+  await second.getByTestId("background-job-kill").click();
   await expect(strip).toHaveCount(0, { timeout: 15000 });
-  const notice = page.getByTestId("bash-tool-finished-job");
+  await expect(running).toBeHidden({ timeout: 15000 });
+  const notice = page.getByTestId("bash-tool-finished-job").first();
   await expect(notice).toBeVisible({ timeout: 15000 });
   await expect(notice).toHaveText("Failed");
-  const card = page.locator(".bash-tool", { has: notice });
+  const card = page
+    .locator(".bash-tool")
+    .filter({ has: page.getByTestId("bash-tool-finished-job") })
+    .filter({ hasText: "echo ready; sleep 600" });
   await expect(card).toContainText("echo ready; sleep 600");
   await expect(card.getByRole("button", { name: "Expand" })).toHaveAttribute(
     "aria-expanded",
