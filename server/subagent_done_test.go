@@ -192,6 +192,8 @@ func requestWithText(t *testing.T, ps *predictable.Service, text string) *llm.Re
 func TestSubagentLoadedOutsideSubagentToolKeepsItsRole(t *testing.T) {
 	t.Parallel()
 	server, database, ps := newTestServer(t)
+	// Pin the one-level policy this test asserts; the server default may vary.
+	server.toolSetConfig.MaxSubagentDepth = 1
 	ctx := t.Context()
 	parent, err := database.CreateConversation(ctx, nil, true, nil, strPtr("predictable"), db.ConversationOptions{})
 	if err != nil {
