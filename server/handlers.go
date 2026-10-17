@@ -2956,11 +2956,17 @@ func writeModelCommandAccepted(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "model-command"})
 }
 
-// getModelList returns the list of available models
+// getModelList returns the list of available models. The UI renders Source
+// verbatim when present; the list deliberately does not enforce a non-empty
+// source — entries without one (custom models, unprovenanced sources) render
+// no source sub-label there, which is silence rather than an empty label.
 func (s *Server) getModelList() []ModelInfo {
 	modelList := []ModelInfo{}
 	if s.predictableOnly {
-		modelList = append(modelList, ModelInfo{ID: "predictable", Ready: true, MaxContextTokens: 200000, SupportsImages: true, SupportsReasoning: true})
+		// The label the modelsources machinery gives the built-in source
+		// (see modelsources.Predictable), so the picker's always-on source
+		// sub-label has something to name in predictable-only mode too.
+		modelList = append(modelList, ModelInfo{ID: "predictable", Source: "builtin", Ready: true, MaxContextTokens: 200000, SupportsImages: true, SupportsReasoning: true})
 	} else {
 		modelIDs := s.llmManager.GetAvailableModels()
 		for _, id := range modelIDs {

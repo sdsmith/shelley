@@ -16,9 +16,9 @@
      - Options carry one grey sub-label line under the name: the model's
        cost breakdown (utils/costNotation, from the model list's cost field;
        tooltip on the cost span when a marker applies), then the source
-       after a `·` when the model has one. Every option names its source in
-       every install — single-gateway installs included — so provenance is
-       always visible.
+       after a `·` when the model has one — in every install, single-gateway
+       installs included, so provenance is visible whenever the list names
+       it.
      - Tier-2 models stay behind a "All models (N)" toggle; an active search
        spans all models so nothing is unfindable.
      PrimeVue owns open/close, outside-click, Escape and viewport-aware flip
