@@ -375,4 +375,9 @@ func TestHandleModelsPredictableHasNoCost(t *testing.T) {
 	if raw, ok := got[0]["cost"]; ok {
 		t.Errorf("predictable carries cost %s, want the key omitted", raw)
 	}
+	// Pin the source stamp here too, where a Go regression deleting it fails
+	// fast rather than only at the e2e layer.
+	if source := string(got[0]["source"]); source != `"builtin"` {
+		t.Errorf("predictable source = %s, want builtin", source)
+	}
 }

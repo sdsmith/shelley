@@ -2958,8 +2958,9 @@ func writeModelCommandAccepted(w http.ResponseWriter) {
 
 // getModelList returns the list of available models. The UI renders Source
 // verbatim when present; the list deliberately does not enforce a non-empty
-// source — entries without one (custom models, unprovenanced sources) render
-// no source sub-label there, which is silence rather than an empty label.
+// source — an entry can transiently lack one (a mid-refresh GetService/
+// GetModelInfo miss leaves info.Source empty) and renders no source sub-label
+// there, which is silence rather than an empty label.
 func (s *Server) getModelList() []ModelInfo {
 	modelList := []ModelInfo{}
 	if s.predictableOnly {
