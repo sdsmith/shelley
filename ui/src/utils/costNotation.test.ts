@@ -1,0 +1,176 @@
+// Unit tests for formatModelCost — the picker's cost notation module.
+// Run with: pnpm exec tsx src/utils/costNotation.test.ts
+import { formatModelCost, ModelPricing } from "./costNotation";
+
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+function eq(cost: ModelPricing, wantBreakdown: string, wantTooltip: string | null, name: string) {
+  const got = formatModelCost(cost);
+  if (got.breakdown === wantBreakdown && got.tooltip === wantTooltip) {
+    passed++;
+  } else {
+    failed++;
+    failures.push(
+      `✗ ${name}: got breakdown ${JSON.stringify(got.breakdown)} tooltip ${JSON.stringify(got.tooltip)}, want ${JSON.stringify(wantBreakdown)} / ${JSON.stringify(wantTooltip)}`,
+    );
+  }
+}
+
+// Table-driven breakdown cases.
+eq(
+  { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$2/$0.50/$10",
+  null,
+  "plain triple",
+);
+
+// Decimal trimming: integers stay bare, fractional values keep at least two
+// decimals, further decimals appear exactly when the real rate needs them.
+const base = { output: 10, cache_read: 0.5, cache_write: 0, tiers: [] };
+eq({ ...base, input: 5 }, "$5/$0.50/$10", null, "integer rate stays bare");
+eq({ ...base, input: 0.5 }, "$0.50/$0.50/$10", null, "one decimal pads to two");
+eq({ ...base, input: 2.5 }, "$2.50/$0.50/$10", null, "fractional keeps two decimals");
+eq({ ...base, input: 0.075 }, "$0.075/$0.50/$10", null, "third decimal kept");
+eq({ ...base, input: 0.0025 }, "$0.0025/$0.50/$10", null, "never rounds a real rate");
+eq({ ...base, input: 825.24 }, "$825.24/$0.50/$10", null, "two decimals on a large rate");
+eq({ input: 2, output: 6.25, cache_read: 0.075, cache_write: 0, tiers: [] }, "$2/$0.075/$6.25", null, "each slot formats independently");
+
+// The upstream catalog carries float noise ("0.09999999999999999" for 0.1);
+// rates must read as the intended decimal, not the noise.
+eq(
+  { input: 0.09999999999999999, output: 0.39999999999999997, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$0.10/$0.50/$0.40",
+  null,
+  "float noise renders as the intended decimal",
+);
+eq(
+  { input: 0.049999999999999996, output: 1.5999999999999999, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$0.05/$0.50/$1.60",
+  null,
+  "float noise pads to two decimals",
+);
+
+// Missing cache pricing dashes the cached slot so the three slots stay
+// unambiguous — a missing cache discount must not read as a free one.
+eq(
+  { input: 2, output: 10, cache_read: 0, cache_write: 0, tiers: [] },
+  "$2/-/$10",
+  null,
+  "missing cache pricing dashes the cached slot",
+);
+
+// A cache-write surcharge stars the cached slot.
+eq(
+  { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25, tiers: [] },
+  "$5/$0.50*/$25",
+  "* Surcharge:\n- cache writes $6.25/M",
+  "surcharge stars the cached slot",
+);
+
+// Tiered pricing prefixes the breakdown with ** — the shown rates are the
+// short-context base rates, not the whole story.
+eq(
+  { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 100000 }] },
+  "**$1/$2/$3",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
+  "tiered pricing prefixes **",
+);
+
+// The task's combined example: a tiered model with base cost $1/$2/$3 and a
+// cache-write surcharge.
+// The task's combined example — both sections, tier rates tier-local, the
+// tier's own surcharge starred, threshold in k:
+//   * Surcharge:
+//   - cache writes $1/M
+//   ** Tiered pricing (not reflected in conversation cumulative cost):
+//   - $2/$4*/$6 @ above 100k input
+eq(
+  { input: 1, output: 3, cache_read: 2, cache_write: 1, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 2, threshold_tokens: 100000 }] },
+  "**$1/$2*/$3",
+  "* Surcharge:\n- cache writes $1/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4*/$6 @ above 100k input",
+  "combined ** prefix and surcharge star",
+);
+
+// Tooltip: the surcharge section appears only when the surcharge marker
+// does, showing the base cache-write rate.
+eq(
+  { input: 5, output: 25, cache_read: 0.5, cache_write: 0.125, tiers: [] },
+  "$5/$0.50*/$25",
+  "* Surcharge:\n- cache writes $0.125/M",
+  "tooltip: surcharge section only",
+);
+
+// Tooltip: the tiered section lists each tier's own rates in the triple
+// notation with its token threshold.
+eq(
+  { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 100000 }] },
+  "**$1/$2/$3",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
+  "tooltip: tiered section only",
+);
+eq(
+  { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 262144 }] },
+  "**$1/$2/$3",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 262k input",
+  "tooltip: threshold renders in k",
+);
+
+// Each tier renders its own line, in tier order; a tier without cache
+// pricing dashes its cached slot like a base triple would.
+eq(
+  {
+    input: 1, output: 3, cache_read: 2, cache_write: 0,
+    tiers: [
+      { input: 2, output: 6, cache_read: 0, cache_write: 0, threshold_tokens: 128000 },
+      { input: 4, output: 12, cache_read: 8, cache_write: 0, threshold_tokens: 256000 },
+    ],
+  },
+  "**$1/$2/$3",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/-/$6 @ above 128k input\n- $4/$8/$12 @ above 256k input",
+  "tooltip: one line per tier in order",
+);
+
+// The PRD's exact tooltip example, end to end.
+eq(
+  {
+    input: 1, output: 3, cache_read: 2, cache_write: 0.125,
+    tiers: [{ input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.1, threshold_tokens: 100000 }],
+  },
+  "**$1/$2*/$3",
+  "* Surcharge:\n- cache writes $0.125/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $0.50/$0.05*/$2.50 @ above 100k input",
+  "tooltip: PRD example verbatim",
+);
+
+// The star marks the cached slot even when the slot itself is a dash (the
+// catalog has such models: no cache-read pricing but a priced cache write) —
+// the tooltip still explains the surcharge.
+eq(
+  { input: 2, output: 10, cache_read: 0, cache_write: 0.1, tiers: [] },
+  "$2/-*/$10",
+  "* Surcharge:\n- cache writes $0.10/M",
+  "surcharge stars a dashed cached slot",
+);
+
+// A marker in the breakdown is exactly what produces a tooltip.
+{
+  const costs: ModelPricing[] = [
+    { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
+    { input: 2, output: 10, cache_read: 0, cache_write: 0, tiers: [] },
+    { input: 2, output: 10, cache_read: 0.5, cache_write: 0.1, tiers: [] },
+    { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [{ input: 3, output: 11, cache_read: 1, cache_write: 0, threshold_tokens: 128000 }] },
+  ];
+  for (const cost of costs) {
+    const { breakdown, tooltip } = formatModelCost(cost);
+    const marked = breakdown.includes("*");
+    if ((tooltip !== null) === marked) passed++;
+    else {
+      failed++;
+      failures.push(`✗ tooltip presence tracks markers: ${breakdown} → ${JSON.stringify(tooltip)}`);
+    }
+  }
+}
+
+console.log(`costNotation: ${passed} passed, ${failed} failed`);
+for (const f of failures) console.error(f);
+if (failed > 0) process.exit(1);
