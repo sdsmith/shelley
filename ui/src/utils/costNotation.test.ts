@@ -51,6 +51,32 @@ eq(
   "float noise pads to two decimals",
 );
 
+// Margin pin for the 12-significant-digit normalize: today's longest catalog
+// rate carries seven significant digits (these are real snapshot values) and
+// must survive unrounded.
+eq(
+  { input: 0.1095892, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$0.1095892/$0.50/$10",
+  null,
+  "a seven-significant-digit rate survives unrounded",
+);
+
+// Outside String()'s plain-decimal range ([1e-6, 1e21)) a rate would come
+// out in exponent notation; a picker slot must read as a plain decimal
+// ("$5e-7" tells the user nothing), whatever a future catalog refresh ships.
+eq(
+  { input: 5e-7, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$0.0000005/$0.50/$10",
+  null,
+  "sub-1e-6 rate renders as a plain decimal",
+);
+eq(
+  { input: 10, output: 1e21, cache_read: 0.5, cache_write: 0, tiers: [] },
+  "$10/$0.50/$1000000000000000000000",
+  null,
+  "1e21-and-up rate renders as a plain decimal",
+);
+
 // Missing cache pricing dashes the cached slot so the three slots stay
 // unambiguous — a missing cache discount must not read as a free one.
 eq(
@@ -58,6 +84,16 @@ eq(
   "$2/-/$10",
   null,
   "missing cache pricing dashes the cached slot",
+);
+
+// A zero input or output rate is reachable (the catalog holds entries with a
+// zero base rate but priced cache) and renders as $0 — the dash belongs to
+// the cached slot alone.
+eq(
+  { input: 0, output: 0, cache_read: 0.05, cache_write: 0, tiers: [] },
+  "$0/$0.05/$0",
+  null,
+  "zero input and output render as $0",
 );
 
 // A cache-write surcharge stars the cached slot.
@@ -77,9 +113,7 @@ eq(
   "tiered pricing prefixes **",
 );
 
-// The task's combined example: a tiered model with base cost $1/$2/$3 and a
-// cache-write surcharge.
-// The task's combined example — both sections, tier rates tier-local, the
+// The PRD's combined example — both sections, tier rates tier-local, the
 // tier's own surcharge starred, threshold in k:
 //   * Surcharge:
 //   - cache writes $1/M
