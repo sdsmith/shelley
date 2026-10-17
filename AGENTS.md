@@ -47,3 +47,9 @@ Before making any modification in ~/.config/shelley/shelley-customization/ — i
     entry that duplicates one of the real choices. Only keep a `default` sentinel when the
     concrete value is genuinely unknowable; even then, spell it out if you can (e.g. `Default
     (on)` for a boolean toggle).
+
+17. Model pricing and capability data comes from the embedded models.dev snapshot
+    (`models/modelsdev/api.json`). Refresh it with `make modelsdev-refresh`. The package
+    tests pin the snapshot's current values, so a refresh that changes pricing fails until
+    the pins in `models/modelsdev/modelsdev_test.go` are updated deliberately; then commit
+    and rebuild.

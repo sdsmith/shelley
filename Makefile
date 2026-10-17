@@ -2,7 +2,7 @@
 
 PNPM = npx --yes $(shell node -p "require('./ui/package.json').packageManager") --dir ui
 
-.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e ui serve clean help templates demo exe-scroll exe-scroll-all
+.PHONY: build build-custom build-linux-aarch64 build-linux-x86 test test-go test-e2e ui serve clean help templates demo exe-scroll exe-scroll-all modelsdev-refresh
 
 # Default target
 all: build
@@ -23,6 +23,17 @@ templates:
 		name=$$(basename "$$dir"); \
 		tar -czf "templates/$$name.tar.gz" -C "templates/$$name" --exclude='.DS_Store' .; \
 	done
+
+# Refresh the embedded models.dev snapshot (model pricing, capabilities,
+# limits) from https://models.dev/api.json. The package tests pin the
+# snapshot's current values, so a refresh that changes pricing fails until the
+# pins in modelsdev_test.go are updated deliberately. Commit the snapshot (and
+# any pin updates), then rebuild with make build-custom.
+modelsdev-refresh:
+	@curl -fsSL https://models.dev/api.json -o models/modelsdev/api.json
+	@go test ./models/modelsdev
+	@git diff --stat -- models/modelsdev
+	@echo "Snapshot refreshed. If the tests failed, update their pins; then commit and run: make build-custom"
 
 # Build the UI and Go binary
 build: exe-scroll ui templates
@@ -140,6 +151,7 @@ help:
 	@echo "  build-linux-x86      Build for Linux x86_64"
 	@echo "  ui            Build UI only"
 	@echo "  templates     Build template tarballs"
+	@echo "  modelsdev-refresh  Refresh the models.dev snapshot (pricing/capabilities); tests pin its values"
 	@echo "  test          Run all tests (Go + E2E)"
 	@echo "  test-go       Run Go tests only"
 	@echo "  test-e2e      Run E2E tests (headless)"
