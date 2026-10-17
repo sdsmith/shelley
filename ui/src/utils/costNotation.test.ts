@@ -5,14 +5,24 @@ import { formatModelCost, ModelPricing } from "./costNotation";
 let passed = 0;
 let failed = 0;
 const failures: string[] = [];
-function eq(cost: ModelPricing, wantBreakdown: string, wantTooltip: string | null, name: string) {
+function eq(
+  cost: ModelPricing,
+  wantBreakdown: string,
+  wantTooltip: string | null,
+  name: string,
+  wantSrText: string | null = null,
+) {
   const got = formatModelCost(cost);
-  if (got.breakdown === wantBreakdown && got.tooltip === wantTooltip) {
+  if (
+    got.breakdown === wantBreakdown &&
+    got.tooltip === wantTooltip &&
+    got.srText === wantSrText
+  ) {
     passed++;
   } else {
     failed++;
     failures.push(
-      `✗ ${name}: got breakdown ${JSON.stringify(got.breakdown)} tooltip ${JSON.stringify(got.tooltip)}, want ${JSON.stringify(wantBreakdown)} / ${JSON.stringify(wantTooltip)}`,
+      `✗ ${name}: got breakdown ${JSON.stringify(got.breakdown)} tooltip ${JSON.stringify(got.tooltip)} srText ${JSON.stringify(got.srText)}, want ${JSON.stringify(wantBreakdown)} / ${JSON.stringify(wantTooltip)} / ${JSON.stringify(wantSrText)}`,
     );
   }
 }
@@ -102,6 +112,7 @@ eq(
   "$5/$0.50*/$25",
   "* Surcharge:\n- cache writes $6.25/M",
   "surcharge stars the cached slot",
+  "cache-write surcharge — listed rates are short-context base rates",
 );
 
 // Tiered pricing prefixes the breakdown with ** — the shown rates are the
@@ -111,6 +122,7 @@ eq(
   "**$1/$2/$3",
   "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
   "tiered pricing prefixes **",
+  "tiered pricing applies — listed rates are short-context base rates",
 );
 
 // The PRD's combined example — both sections, tier rates tier-local, the
@@ -124,6 +136,7 @@ eq(
   "**$1/$2*/$3",
   "* Surcharge:\n- cache writes $1/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4*/$6 @ above 100k input",
   "combined ** prefix and surcharge star",
+  "cache-write surcharge; tiered pricing applies — listed rates are short-context base rates",
 );
 
 // Tooltip: the surcharge section appears only when the surcharge marker
@@ -133,6 +146,7 @@ eq(
   "$5/$0.50*/$25",
   "* Surcharge:\n- cache writes $0.125/M",
   "tooltip: surcharge section only",
+  "cache-write surcharge — listed rates are short-context base rates",
 );
 
 // Tooltip: the tiered section lists each tier's own rates in the triple
@@ -142,12 +156,14 @@ eq(
   "**$1/$2/$3",
   "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
   "tooltip: tiered section only",
+  "tiered pricing applies — listed rates are short-context base rates",
 );
 eq(
   { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 262144 }] },
   "**$1/$2/$3",
   "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 262k input",
   "tooltip: threshold renders in k",
+  "tiered pricing applies — listed rates are short-context base rates",
 );
 
 // Each tier renders its own line, in tier order; a tier without cache
@@ -163,6 +179,7 @@ eq(
   "**$1/$2/$3",
   "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/-/$6 @ above 128k input\n- $4/$8/$12 @ above 256k input",
   "tooltip: one line per tier in order",
+  "tiered pricing applies — listed rates are short-context base rates",
 );
 
 // The PRD's exact tooltip example, end to end.
@@ -174,6 +191,7 @@ eq(
   "**$1/$2*/$3",
   "* Surcharge:\n- cache writes $0.125/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $0.50/$0.05*/$2.50 @ above 100k input",
   "tooltip: PRD example verbatim",
+  "cache-write surcharge; tiered pricing applies — listed rates are short-context base rates",
 );
 
 // The star marks the cached slot even when the slot itself is a dash (the
@@ -184,9 +202,11 @@ eq(
   "$2/-*/$10",
   "* Surcharge:\n- cache writes $0.10/M",
   "surcharge stars a dashed cached slot",
+  "cache-write surcharge — listed rates are short-context base rates",
 );
 
-// A marker in the breakdown is exactly what produces a tooltip.
+// A marker in the breakdown is exactly what produces a tooltip and a
+// spoken form; neither appears without one.
 {
   const costs: ModelPricing[] = [
     { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
@@ -195,12 +215,12 @@ eq(
     { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [{ input: 3, output: 11, cache_read: 1, cache_write: 0, threshold_tokens: 128000 }] },
   ];
   for (const cost of costs) {
-    const { breakdown, tooltip } = formatModelCost(cost);
+    const { breakdown, tooltip, srText } = formatModelCost(cost);
     const marked = breakdown.includes("*");
-    if ((tooltip !== null) === marked) passed++;
+    if ((tooltip !== null) === marked && (srText !== null) === marked) passed++;
     else {
       failed++;
-      failures.push(`✗ tooltip presence tracks markers: ${breakdown} → ${JSON.stringify(tooltip)}`);
+      failures.push(`✗ marker invariants: ${breakdown} → tooltip ${JSON.stringify(tooltip)} srText ${JSON.stringify(srText)}`);
     }
   }
 }

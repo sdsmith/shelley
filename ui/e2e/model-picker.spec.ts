@@ -38,6 +38,8 @@ async function mockPricedModelList(page: import("@playwright/test").Page) {
           display_name: "Marked Twin",
           source: "Twin A",
           cost: MARKED_COST,
+          ready: true,
+          tier: 1,
         },
         {
           ...models[0],
@@ -45,12 +47,16 @@ async function mockPricedModelList(page: import("@playwright/test").Page) {
           display_name: "Sourced Twin",
           source: "Twin B",
           cost: PLAIN_COST,
+          ready: true,
+          tier: 1,
         },
         {
           ...models[0],
           id: "predictable-unpriced",
           display_name: "Unpriced Twin",
           source: "Twin C",
+          ready: true,
+          tier: 1,
         },
       ],
     });
@@ -132,8 +138,13 @@ test.describe("Model picker (PrimeVue)", () => {
     await picker.click();
     const panel = page.locator(".model-picker-panel");
 
-    // The plain priced option: just the triple.
-    const plainOption = panel.locator(".p-select-option", { hasText: "predictable" }).first();
+    // The plain priced option: just the triple. Not a Recent row — recents
+    // also name "predictable" once the DB has history from other tests.
+    const plainOption = panel
+      .locator(".p-select-option:not(:has(.model-picker-option-effort))", {
+        hasText: "predictable",
+      })
+      .first();
     await expect(plainOption.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
 
     // Cost and source share one grey line (cost first), so priced rows keep
@@ -162,33 +173,52 @@ test.describe("Model picker (PrimeVue)", () => {
     await picker.click();
     const panel = page.locator(".model-picker-panel");
 
-    // A plain (unmarked) price: hovering the cost span opens no tooltip.
-    await panel.locator(".p-select-option", { hasText: "Sourced Twin" }).hover();
-    await expect(page.locator(".p-tooltip")).toHaveCount(0);
-
-    // A marked one (surcharge + tier): the tooltip carries the details.
-    const markedCost = panel
-      .locator(".p-select-option", { hasText: "Marked Twin" })
-      .locator(".model-picker-option-cost");
+    // A marked option (surcharge + tier): hovering its cost span opens the
+    // tooltip with the details, and the markers also get a spoken form.
+    const markedOption = panel.locator(".p-select-option", { hasText: "Marked Twin" });
+    const markedCost = markedOption.locator(".model-picker-option-cost");
     await expect(markedCost).toHaveText("**$1/$2*/$3");
     await markedCost.hover();
-    await expect(page.locator(".p-tooltip-text")).toHaveText(MARKED_TOOLTIP, {
-      useInnerText: true,
-    });
+    const tooltipText = page.locator(".p-tooltip-text");
+    await tooltipText.waitFor();
+    // Raw equality: toHaveText normalizes whitespace, which would let a
+    // lost pre-line rule (all four sections on one line) pass.
+    expect(await tooltipText.innerText()).toBe(MARKED_TOOLTIP);
+    await expect(markedOption.locator(".sr-only")).toHaveText(
+      "cache-write surcharge; tiered pricing applies — listed rates are short-context base rates",
+    );
+
+    // A plain (unmarked) price: moving to its cost span — where v-tooltip
+    // binds — takes the tooltip away again. No spoken form either.
+    const plainOption = panel
+      .locator(".p-select-option:not(:has(.model-picker-option-effort))", {
+        hasText: "Sourced Twin",
+      });
+    await plainOption.locator(".model-picker-option-cost").hover();
+    await expect(page.locator(".p-tooltip")).toHaveCount(0);
+    await expect(plainOption.locator(".sr-only")).toHaveCount(0);
   });
 
   test("closed trigger keeps showing just the model name and effort", async ({ page }) => {
     await mockPricedModelList(page);
+    // Store an effort so the trigger's suffix is present to assert; mark the
+    // default profile applied, or the composer's first-load profile
+    // application resets the level (see the recent-pricing test).
+    await page.addInitScript(() => {
+      localStorage.setItem("shelley.thinkingLevel.v2", "high");
+      localStorage.setItem("shelley.profileApplied", "Default");
+    });
     await page.goto("/new");
     const picker = page.locator(".model-picker.p-select");
     await expect(picker).toBeVisible({ timeout: 10000 });
 
-    // Pick the marked model and close: the trigger names the model, never
-    // the price.
+    // Pick the marked model and close: the trigger names the model and the
+    // effort, never the price.
     await picker.click();
     const panel = page.locator(".model-picker-panel");
     await panel.locator(".p-select-option", { hasText: "Marked Twin" }).click();
     await expect(picker.locator(".model-picker-value-name")).toHaveText("Marked Twin");
+    await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
     await expect(picker.locator(".model-picker-value")).not.toContainText("$");
   });
 
@@ -233,6 +263,9 @@ test.describe("Model picker (PrimeVue)", () => {
         json: { ...snapshot, conversations: [seed] },
       });
     });
+    // "medium" is load-bearing: the conversation above was created with
+    // "high", and the active combination is filtered out of recents —
+    // storing the same level would leave the Recent group empty.
     await page.addInitScript(() => {
       localStorage.setItem("shelley.thinkingLevel.v2", "medium");
       localStorage.setItem("shelley.profileApplied", "Default");

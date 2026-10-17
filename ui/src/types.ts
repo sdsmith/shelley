@@ -138,7 +138,8 @@ export interface Model {
   // catalog — the same source the usage-cost math prices against. Absent when
   // the catalog cannot price the model's (base URL, wire name) identity. Flat
   // wire shape: see utils/costNotation's ModelPricing; NOT services/api.ts's
-  // ModelCostDTO, which types the old /api/model-costs nested tier envelope.
+  // ModelCostDTO, which types the /api/model-costs response's base rates and
+  // carries no tiers field — the field formatModelCost dereferences.
   cost?: import("./utils/costNotation").ModelPricing;
 }
 

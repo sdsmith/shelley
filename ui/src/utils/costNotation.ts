@@ -1,8 +1,8 @@
 // Cost notation for the model picker: turns a model list cost object (the
 // wire shape of server/model_costs.go's modelCostDTO, USD per million
 // tokens) into the inline "$in/$cached/$out" breakdown and, when a marker
-// applies, tooltip text. Rendering surfaces (task 03) consume these outputs
-// so notation lives in exactly one place.
+// applies, tooltip text plus a spoken form. Rendering surfaces consume
+// these outputs so notation lives in exactly one place.
 //
 // This is deliberately separate from tokenCostGraph's formatUsd, which is
 // spend-oriented (three-to-four decimals for micro-amounts); rates need the
@@ -44,6 +44,10 @@ export interface CostNotation {
   breakdown: string;
   /** Tooltip text when a marker applies, null for unmarked models. */
   tooltip: string | null;
+  /** Spoken form of the markers, for assistive tech — the tooltip is
+   *  pointer-only and the glyphs read as bare punctuation. Null exactly
+   *  when tooltip is null: unmarked models get nothing extra. */
+  srText: string | null;
 }
 
 // The marker glyphs, shared between the inline breakdown and the tooltip:
@@ -105,7 +109,8 @@ function triple(r: ModelPricing | ModelPricingTier, star: boolean): string {
 /** Notation for one model's cost: the inline breakdown, markers included,
  *  and the tooltip text. The tooltip is "\n"-joined lines — section headers
  *  lead with their marker and end ":", detail lines start "- " — and is
- *  null exactly when the breakdown carries no marker. */
+ *  null exactly when the breakdown carries no marker; srText (the same
+ *  markers in words, for non-pointer users) follows tooltip's null-ness. */
 export function formatModelCost(cost: ModelPricing): CostNotation {
   const star = surcharged(cost);
   const tiered = cost.tiers.length > 0;
@@ -121,8 +126,16 @@ export function formatModelCost(cost: ModelPricing): CostNotation {
     }
   }
 
+  const srParts = [
+    ...(star ? ["cache-write surcharge"] : []),
+    ...(tiered ? ["tiered pricing applies"] : []),
+  ];
+
   return {
     breakdown: (tiered ? TIERED_PREFIX : "") + triple(cost, star),
     tooltip: lines.length ? lines.join("\n") : null,
+    srText: srParts.length
+      ? `${srParts.join("; ")} — listed rates are short-context base rates`
+      : null,
   };
 }

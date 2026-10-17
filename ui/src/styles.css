@@ -16997,8 +16997,8 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The sub-label is one line however much of it renders, so priced and
-   unpriced rows share a shape. The tooltip hangs on the cost span alone. */
+/* The grey line beneath the name; cost and source ellipsize within it, so
+   a row is one name line plus at most one grey line. */
 .p-select-overlay.model-picker-panel .model-picker-option-sublabel {
   font-size: var(--font-size-11);
   color: var(--text-secondary);

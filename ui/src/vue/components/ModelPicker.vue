@@ -19,7 +19,6 @@
        after a `·` when the source label renders. Source sub-labels only
        render when the catalog actually spans more than one source — a
        single-gateway install never repeats its hostname under every option.
-       (The pricing PRD's phase 4 removes that gate.)
      - Tier-2 models stay behind a "All models (N)" toggle; an active search
        spans all models so nothing is unfindable.
      PrimeVue owns open/close, outside-click, Escape and viewport-aware flip
@@ -139,10 +138,8 @@
       <div class="model-picker-option" @mousedown.stop.prevent="choose(option, index)">
         <div class="model-picker-option-content">
           <span class="model-picker-option-name">{{ option.label }}</span>
-          <!-- One grey line under the name: cost breakdown first, then the
-               source after a `·` when the source label renders. The tooltip
-               (markers only) sits on the cost span. Unpriced models render
-               no price at all — silence, not a zero. -->
+          <!-- The tooltip (markers only) sits on the cost span; unpriced
+               models render no price at all — silence, not a zero. -->
           <span
             v-if="option.notation || showsSource(option)"
             class="model-picker-option-sublabel"
@@ -153,12 +150,18 @@
               class="model-picker-option-cost"
               >{{ option.notation.breakdown }}</span
             >
+            <!-- The tooltip is pointer-only, so markers also get a spoken
+                 form for assistive tech. -->
+            <span v-if="option.notation?.srText" class="sr-only">{{
+              option.notation.srText
+            }}</span>
             <span
               v-if="option.notation && showsSource(option)"
               class="model-picker-option-separator"
               aria-hidden="true"
               >{{ " · " }}</span
             >
+            <!-- The class hooks the e2e's source-label assertions; it has no styles of its own. -->
             <span v-if="showsSource(option)" class="model-picker-option-source">{{
               option.source
             }}</span>
@@ -495,7 +498,8 @@ const dominantSource = computed(() => {
   return best;
 });
 
-// Whether the option's source sub-label renders under that gate.
+// Whether the option's source sub-label renders — only when the source
+// differs from the dominant one (see dominantSource).
 const showsSource = (option: PickerOption): boolean =>
   !!option.source && option.source !== dominantSource.value;
 
