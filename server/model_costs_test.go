@@ -2,13 +2,17 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"math"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/predictable"
+	"shelley.exe.dev/models"
 	"shelley.exe.dev/models/modelsdev"
 )
 
@@ -248,5 +252,111 @@ func TestSubagentUsageHandler(t *testing.T) {
 	}
 	if string(res2.PerModel) != "[]" {
 		t.Errorf("leaf per_model = %s, want []", res2.PerModel)
+	}
+}
+
+// TestHandleModelsCarriesModelCost pins the model list's per-model cost
+// object: present with flattened tiers for a model whose (base URL, wire
+// model name) the catalog knows, absent otherwise — including a model whose
+// display ID alone would price but whose identity tuple the catalog cannot
+// resolve, and a catalog entry whose four base rates are all zero.
+func TestHandleModelsCarriesModelCost(t *testing.T) {
+	t.Parallel()
+	mgr, err := models.NewManager(&models.Config{Models: []models.Built{
+		{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, APIModelName: "gpt-5.6-sol", BaseURL: "https://api.openai.com", Service: predictable.NewService()},
+		{ID: "opus", Provider: models.ProviderAnthropic, APIModelName: "claude-opus-4-6", BaseURL: "https://api.anthropic.com", Service: predictable.NewService()},
+		// Display ID is a priced catalog name, but the identity tuple
+		// (base URL, wire name) is not: looking up by display ID would
+		// wrongly attach claude-opus-4-6's pricing.
+		{ID: "claude-opus-4-6", Provider: models.ProviderBuiltIn, APIModelName: "not-in-models-dev", BaseURL: "https://unknown.example", Service: predictable.NewService()},
+		// The catalog lists this model but records no base rates.
+		{ID: "poe-glm", Provider: models.ProviderOpenAI, APIModelName: "novita/glm-4.7-n", BaseURL: "https://api.poe.com/v1", Service: predictable.NewService()},
+	}})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	s := &Server{llmManager: mgr, logger: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.handleModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+
+	var got []map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]map[string]json.RawMessage{}
+	for _, m := range got {
+		var id string
+		if err := json.Unmarshal(m["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		byID[id] = m
+	}
+
+	var sol struct {
+		Input      float64 `json:"input"`
+		Output     float64 `json:"output"`
+		CacheRead  float64 `json:"cache_read"`
+		CacheWrite float64 `json:"cache_write"`
+		Tiers      []struct {
+			Input           float64 `json:"input"`
+			Output          float64 `json:"output"`
+			CacheRead       float64 `json:"cache_read"`
+			CacheWrite      float64 `json:"cache_write"`
+			ThresholdTokens int     `json:"threshold_tokens"`
+		} `json:"tiers"`
+	}
+	if err := json.Unmarshal(byID["gpt-5.6-sol"]["cost"], &sol); err != nil {
+		t.Fatalf("gpt-5.6-sol cost %s: %v", byID["gpt-5.6-sol"]["cost"], err)
+	}
+	if sol.Input != 4 || sol.Output != 20 || sol.CacheRead != 0.4 || sol.CacheWrite != 5 {
+		t.Errorf("gpt-5.6-sol cost = %+v, want 4/20/0.4/5", sol)
+	}
+	if len(sol.Tiers) != 1 || sol.Tiers[0].Input != 8 || sol.Tiers[0].Output != 30 || sol.Tiers[0].CacheRead != 0.8 || sol.Tiers[0].CacheWrite != 10 || sol.Tiers[0].ThresholdTokens != 272000 {
+		t.Errorf("gpt-5.6-sol tiers = %+v, want [{8 30 0.8 10 272000}]", sol.Tiers)
+	}
+
+	var opus struct {
+		Input      float64 `json:"input"`
+		Output     float64 `json:"output"`
+		CacheRead  float64 `json:"cache_read"`
+		CacheWrite float64 `json:"cache_write"`
+	}
+	if err := json.Unmarshal(byID["opus"]["cost"], &opus); err != nil {
+		t.Fatalf("opus cost %s: %v", byID["opus"]["cost"], err)
+	}
+	if opus.Input != 5 || opus.Output != 25 || opus.CacheRead != 0.5 || opus.CacheWrite != 6.25 {
+		t.Errorf("opus cost = %+v, want 5/25/0.5/6.25", opus)
+	}
+	if raw := byID["opus"]["cost"]; strings.Contains(string(raw), "tiers") {
+		t.Errorf("opus cost = %s, want tiers omitted for a model without tiers", raw)
+	}
+
+	for _, id := range []string{"claude-opus-4-6", "poe-glm"} {
+		if raw, ok := byID[id]["cost"]; ok {
+			t.Errorf("%s carries cost %s, want the key omitted", id, raw)
+		}
+	}
+}
+
+// The predictable fixture is a test double, not a billable model: it never
+// carries a cost object.
+func TestHandleModelsPredictableHasNoCost(t *testing.T) {
+	t.Parallel()
+	s := &Server{predictableOnly: true, logger: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.handleModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+
+	var got []map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("models = %d entries, want just the predictable fixture", len(got))
+	}
+	if raw, ok := got[0]["cost"]; ok {
+		t.Errorf("predictable carries cost %s, want the key omitted", raw)
 	}
 }

@@ -2661,10 +2661,15 @@ type ModelInfo struct {
 	// better available sibling (see models.AssignTiers). The UI keeps tier-2
 	// models behind a "more models" affordance. Older iOS/Android clients that
 	// don't know about this field simply ignore it.
-	Tier              int      `json:"tier,omitempty"`
-	SupportsImages    bool     `json:"supports_images"`
-	SupportsReasoning bool     `json:"supports_reasoning"`
-	ReasoningLevels   []string `json:"reasoning_levels,omitempty"`
+	Tier int `json:"tier,omitempty"`
+	// Cost is the model's pricing from the embedded models.dev catalog (USD
+	// per million tokens), looked up by identity tuple (base URL, wire model
+	// name). Nil — omitted from JSON — when the catalog cannot price the
+	// model. Older clients that don't know about this field simply ignore it.
+	Cost              *modelCostDTO `json:"cost,omitempty"`
+	SupportsImages    bool          `json:"supports_images"`
+	SupportsReasoning bool          `json:"supports_reasoning"`
+	ReasoningLevels   []string      `json:"reasoning_levels,omitempty"`
 	// DefaultReasoningLevel is the reasoning level a conversation gets when it
 	// carries no explicit thinking_level override. Lets the UI label
 	// conversations honestly (e.g. "Reasoning medium") instead of leaving the
@@ -2986,6 +2991,7 @@ func (s *Server) getModelList() []ModelInfo {
 				info.APIType = modelInfo.APIType
 				info.APIModelName = modelInfo.APIModelName
 				info.MaxContextTokens, _ = modelsdev.LookupContextLimit(modelInfo.BaseURL, modelInfo.APIModelName)
+				info.Cost = newModelCost(modelInfo.BaseURL, modelInfo.APIModelName)
 			}
 			modelList = append(modelList, info)
 		}

@@ -37,6 +37,49 @@ func (s *Server) handleModelCosts(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"costs": costs})
 }
 
+// modelCostDTO is a model's pricing in USD per million tokens, attached to
+// each model on the model list. Tiers flatten the catalog's context-threshold
+// records to their per-tier rates plus the token threshold above which they
+// apply.
+type modelCostDTO struct {
+	Input      float64            `json:"input"`
+	Output     float64            `json:"output"`
+	CacheRead  float64            `json:"cache_read"`
+	CacheWrite float64            `json:"cache_write"`
+	Tiers      []modelCostTierDTO `json:"tiers,omitempty"`
+}
+
+type modelCostTierDTO struct {
+	Input           float64 `json:"input"`
+	Output          float64 `json:"output"`
+	CacheRead       float64 `json:"cache_read"`
+	CacheWrite      float64 `json:"cache_write"`
+	ThresholdTokens int     `json:"threshold_tokens"`
+}
+
+// newModelCost resolves a model's catalog pricing by its identity tuple (base
+// URL, wire model name) — the same lookup the usage-cost math uses, so the
+// price the picker shows can never disagree with the price the cost math
+// charges. Returns nil when the catalog cannot price the model, including
+// entries whose four base rates are all zero.
+func newModelCost(baseURL, wireModelName string) *modelCostDTO {
+	c, found := modelsdev.LookupCost(baseURL, wireModelName)
+	if !found {
+		return nil
+	}
+	dto := &modelCostDTO{Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite}
+	for _, t := range c.Tiers {
+		dto.Tiers = append(dto.Tiers, modelCostTierDTO{
+			Input:           t.Input,
+			Output:          t.Output,
+			CacheRead:       t.CacheRead,
+			CacheWrite:      t.CacheWrite,
+			ThresholdTokens: t.Tier.Size,
+		})
+	}
+	return dto
+}
+
 // subagentUsageDTO is one subagent's folded usage. Nested subagent costs are
 // attributed to their top-level subagent, so child subtotals sum to the
 // parent's aggregate. EstimatedUsd is priced client-side modelsdev rates; the

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"shelley.exe.dev/llm"
@@ -297,5 +298,51 @@ func TestAssignModelTiersKeepsCustomModelsProminent(t *testing.T) {
 		if model.Tier != want[model.ID] {
 			t.Errorf("%s tier = %d, want %d", model.ID, model.Tier, want[model.ID])
 		}
+	}
+}
+
+// After a refresh re-runs catalog discovery, the refresh response must carry
+// the same per-model cost shape as GET /api/models.
+func TestHandleModelRefreshCarriesModelCost(t *testing.T) {
+	t.Parallel()
+	mgr, err := models.NewManager(&models.Config{
+		Models: []models.Built{{ID: "old-built", Provider: models.ProviderBuiltIn, Service: predictable.NewService()}},
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	s := &Server{
+		llmManager: mgr,
+		logger:     slog.Default(),
+		refreshBuiltModels: func(context.Context) ([]models.Built, error) {
+			return []models.Built{{
+				ID:           "gpt-5.6-sol",
+				Provider:     models.ProviderOpenAI,
+				APIModelName: "gpt-5.6-sol",
+				BaseURL:      "https://api.openai.com",
+				Service:      predictable.NewService(),
+			}}, nil
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleModelRefresh(rec, httptest.NewRequest(http.MethodPost, "/api/models/refresh", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	var got []ModelInfo
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "gpt-5.6-sol" {
+		t.Fatalf("models = %+v, want the refreshed sol model", got)
+	}
+	want := &modelCostDTO{
+		Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 5,
+		Tiers: []modelCostTierDTO{{Input: 8, Output: 30, CacheRead: 0.8, CacheWrite: 10, ThresholdTokens: 272000}},
+	}
+	if !reflect.DeepEqual(got[0].Cost, want) {
+		t.Errorf("refreshed cost = %+v, want %+v", got[0].Cost, want)
 	}
 }
