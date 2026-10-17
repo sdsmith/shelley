@@ -81,15 +81,12 @@ type Cost struct {
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
 	CacheWrite float64 `json:"cache_write"`
-	// Tiers marks where pricing changes; a "context" tier records the prompt
-	// size above which the model bills at a higher rate. Each record carries
-	// the tier's own rates.
+	// Tiers are the model's pricing-tier records; see costTier.
 	Tiers []costTier `json:"tiers"`
 }
 
-// costTier is one pricing-tier record. Rate fields carry the tier's own
-// per-million rates; Tier records where pricing changes — a "context" tier's
-// Size is the prompt size above which the model bills at these rates.
+// costTier is one pricing-tier record: the per-million rates the model bills
+// once a "context" tier's Size — a prompt (input) token count — is exceeded.
 type costTier struct {
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`

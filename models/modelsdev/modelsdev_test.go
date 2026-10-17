@@ -419,6 +419,7 @@ func TestLookupCost(t *testing.T) {
 		// OpenAI snapshot names carry a date suffix that models.dev omits.
 		{"openai dated", "https://llm.int.exe.xyz/v1/responses", "gpt-5.5-2026-04-23", true, Cost{Input: 5, Output: 30, CacheRead: 0.5}},
 		{"openai undated", "", "gpt-5.3-codex", true, Cost{Input: 1.75, Output: 14, CacheRead: 0.175}},
+		{"sol 5.6 via openai", "https://api.openai.com", "gpt-5.6-sol", true, Cost{Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 5}},
 		{"astra via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6-astra", true, Cost{Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5}},
 		{"sol 6.1 via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6.1-sol", true, Cost{Input: 2, Output: 10, CacheRead: 0.1, CacheWrite: 2.5}},
 		{"sol via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6-sol", true, Cost{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
@@ -434,11 +435,21 @@ func TestLookupCost(t *testing.T) {
 			if found != tc.wantFound {
 				t.Fatalf("LookupCost(%q, %q) found = %v, want %v", tc.endpoint, tc.model, found, tc.wantFound)
 			}
-			c.Tiers = nil // pricing tiers are exercised by TestLookupContextLimit
+			c.Tiers = nil // pricing tiers are pinned below and by TestLookupContextLimit
 			if !reflect.DeepEqual(c, tc.want) {
 				t.Errorf("LookupCost(%q, %q) = %+v, want %+v", tc.endpoint, tc.model, c, tc.want)
 			}
 		})
+	}
+	// gpt-5.6-sol's tier rates must survive the decode: make
+	// modelsdev-refresh runs these tests as its tripwire, so an upstream
+	// repricing fails here until this pin is updated deliberately.
+	sol, found := LookupCost("https://api.openai.com", "gpt-5.6-sol")
+	if !found {
+		t.Fatal("gpt-5.6-sol not found")
+	}
+	if len(sol.Tiers) != 1 || sol.Tiers[0].Input != 8 || sol.Tiers[0].Output != 30 || sol.Tiers[0].CacheRead != 0.8 || sol.Tiers[0].CacheWrite != 10 || sol.Tiers[0].Tier.Type != "context" || sol.Tiers[0].Tier.Size != 272000 {
+		t.Errorf("gpt-5.6-sol tiers = %+v, want 8/30/0.8/10 @ context 272000", sol.Tiers)
 	}
 }
 

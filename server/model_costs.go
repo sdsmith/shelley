@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 
+	"shelley.exe.dev/models"
 	"shelley.exe.dev/models/modelsdev"
 )
 
@@ -40,35 +41,56 @@ func (s *Server) handleModelCosts(w http.ResponseWriter, r *http.Request) {
 // modelCostDTO is a model's pricing in USD per million tokens, attached to
 // each model on the model list. Tiers flatten the catalog's context-threshold
 // records to their per-tier rates plus the token threshold above which they
-// apply.
+// apply, and are always present (empty when the model has no tiers).
+//
+// This is deliberately NOT modelsdev.Cost's wire shape: the /api/model-costs
+// and subagent-usage endpoints serialize that type verbatim, keeping the
+// catalog's nested tier:{type,size} envelope under the same "tiers" key. The
+// UI must type the model list's flat shape separately, never reusing the old
+// ModelCostDTO interface for it.
 type modelCostDTO struct {
-	Input      float64            `json:"input"`
-	Output     float64            `json:"output"`
-	CacheRead  float64            `json:"cache_read"`
-	CacheWrite float64            `json:"cache_write"`
-	Tiers      []modelCostTierDTO `json:"tiers,omitempty"`
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+	// Tiers is always present ([] when the model has no pricing tiers).
+	Tiers []modelCostTierDTO `json:"tiers"`
 }
 
 type modelCostTierDTO struct {
-	Input           float64 `json:"input"`
-	Output          float64 `json:"output"`
-	CacheRead       float64 `json:"cache_read"`
-	CacheWrite      float64 `json:"cache_write"`
-	ThresholdTokens int     `json:"threshold_tokens"`
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+	// ThresholdTokens is the prompt (input) token count above which this
+	// tier's rates apply.
+	ThresholdTokens int `json:"threshold_tokens"`
 }
 
-// newModelCost resolves a model's catalog pricing by its identity tuple (base
-// URL, wire model name) — the same lookup the usage-cost math uses, so the
-// price the picker shows can never disagree with the price the cost math
-// charges. Returns nil when the catalog cannot price the model, including
-// entries whose four base rates are all zero.
-func newModelCost(baseURL, wireModelName string) *modelCostDTO {
-	c, found := modelsdev.LookupCost(baseURL, wireModelName)
+// lookupModelCost resolves a model's catalog pricing by its identity tuple
+// (base URL, wire model name) — the same modelsdev.LookupCost the usage-cost
+// math uses, so the price the picker shows can never disagree with the price
+// the cost math charges. Returns nil when the catalog cannot price the
+// model, including entries whose four base rates are all zero.
+func lookupModelCost(info *models.ModelInfo) *modelCostDTO {
+	c, found := modelsdev.LookupCost(info.BaseURL, info.APIModelName)
 	if !found {
 		return nil
 	}
-	dto := &modelCostDTO{Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite}
+	dto := &modelCostDTO{
+		Input:      c.Input,
+		Output:     c.Output,
+		CacheRead:  c.CacheRead,
+		CacheWrite: c.CacheWrite,
+		Tiers:      []modelCostTierDTO{},
+	}
 	for _, t := range c.Tiers {
+		// Same guard as LookupContextLimit: only context-threshold records
+		// with a positive size are pricing cliffs, so a refreshed snapshot
+		// can never publish threshold_tokens: 0.
+		if t.Tier.Type != "context" || t.Tier.Size <= 0 {
+			continue
+		}
 		dto.Tiers = append(dto.Tiers, modelCostTierDTO{
 			Input:           t.Input,
 			Output:          t.Output,

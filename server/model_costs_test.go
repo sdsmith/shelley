@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -263,6 +264,9 @@ func TestSubagentUsageHandler(t *testing.T) {
 func TestHandleModelsCarriesModelCost(t *testing.T) {
 	t.Parallel()
 	mgr, err := models.NewManager(&models.Config{Models: []models.Built{
+		// Prices below are the embedded snapshot's openai/gpt-5.6-sol and
+		// anthropic/claude-opus-4-6 entries; the modelsdev package tests pin
+		// the same values on the make modelsdev-refresh tripwire.
 		{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, APIModelName: "gpt-5.6-sol", BaseURL: "https://api.openai.com", Service: predictable.NewService()},
 		{ID: "opus", Provider: models.ProviderAnthropic, APIModelName: "claude-opus-4-6", BaseURL: "https://api.anthropic.com", Service: predictable.NewService()},
 		// Display ID is a priced catalog name, but the identity tuple
@@ -294,44 +298,53 @@ func TestHandleModelsCarriesModelCost(t *testing.T) {
 		}
 		byID[id] = m
 	}
-
-	var sol struct {
-		Input      float64 `json:"input"`
-		Output     float64 `json:"output"`
-		CacheRead  float64 `json:"cache_read"`
-		CacheWrite float64 `json:"cache_write"`
-		Tiers      []struct {
-			Input           float64 `json:"input"`
-			Output          float64 `json:"output"`
-			CacheRead       float64 `json:"cache_read"`
-			CacheWrite      float64 `json:"cache_write"`
-			ThresholdTokens int     `json:"threshold_tokens"`
-		} `json:"tiers"`
+	for _, id := range []string{"gpt-5.6-sol", "opus", "claude-opus-4-6", "poe-glm"} {
+		if _, ok := byID[id]; !ok {
+			t.Fatalf("model %q missing from response", id)
+		}
 	}
-	if err := json.Unmarshal(byID["gpt-5.6-sol"]["cost"], &sol); err != nil {
-		t.Fatalf("gpt-5.6-sol cost %s: %v", byID["gpt-5.6-sol"]["cost"], err)
-	}
-	if sol.Input != 4 || sol.Output != 20 || sol.CacheRead != 0.4 || sol.CacheWrite != 5 {
-		t.Errorf("gpt-5.6-sol cost = %+v, want 4/20/0.4/5", sol)
-	}
-	if len(sol.Tiers) != 1 || sol.Tiers[0].Input != 8 || sol.Tiers[0].Output != 30 || sol.Tiers[0].CacheRead != 0.8 || sol.Tiers[0].CacheWrite != 10 || sol.Tiers[0].ThresholdTokens != 272000 {
-		t.Errorf("gpt-5.6-sol tiers = %+v, want [{8 30 0.8 10 272000}]", sol.Tiers)
+	costJSON := func(id string) json.RawMessage {
+		raw, ok := byID[id]["cost"]
+		if !ok {
+			t.Fatalf("%s response has no \"cost\" key: %v", id, byID[id])
+		}
+		return raw
 	}
 
-	var opus struct {
-		Input      float64 `json:"input"`
-		Output     float64 `json:"output"`
-		CacheRead  float64 `json:"cache_read"`
-		CacheWrite float64 `json:"cache_write"`
+	type wireTier struct {
+		Input           float64 `json:"input"`
+		Output          float64 `json:"output"`
+		CacheRead       float64 `json:"cache_read"`
+		CacheWrite      float64 `json:"cache_write"`
+		ThresholdTokens int     `json:"threshold_tokens"`
 	}
-	if err := json.Unmarshal(byID["opus"]["cost"], &opus); err != nil {
-		t.Fatalf("opus cost %s: %v", byID["opus"]["cost"], err)
+	type wireCost struct {
+		Input      float64    `json:"input"`
+		Output     float64    `json:"output"`
+		CacheRead  float64    `json:"cache_read"`
+		CacheWrite float64    `json:"cache_write"`
+		Tiers      []wireTier `json:"tiers"`
 	}
-	if opus.Input != 5 || opus.Output != 25 || opus.CacheRead != 0.5 || opus.CacheWrite != 6.25 {
-		t.Errorf("opus cost = %+v, want 5/25/0.5/6.25", opus)
+
+	// A tiered model: tiers flatten to per-tier rates plus the threshold.
+	var sol wireCost
+	if err := json.Unmarshal(costJSON("gpt-5.6-sol"), &sol); err != nil {
+		t.Fatal(err)
 	}
-	if raw := byID["opus"]["cost"]; strings.Contains(string(raw), "tiers") {
-		t.Errorf("opus cost = %s, want tiers omitted for a model without tiers", raw)
+	wantSol := wireCost{Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 5,
+		Tiers: []wireTier{{Input: 8, Output: 30, CacheRead: 0.8, CacheWrite: 10, ThresholdTokens: 272000}}}
+	if !reflect.DeepEqual(sol, wantSol) {
+		t.Errorf("gpt-5.6-sol cost = %+v, want %+v", sol, wantSol)
+	}
+
+	// A tier-less model: tiers present but empty, never null or omitted.
+	var opus wireCost
+	if err := json.Unmarshal(costJSON("opus"), &opus); err != nil {
+		t.Fatal(err)
+	}
+	wantOpus := wireCost{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25, Tiers: []wireTier{}}
+	if !reflect.DeepEqual(opus, wantOpus) {
+		t.Errorf("opus cost = %+v, want %+v", opus, wantOpus)
 	}
 
 	for _, id := range []string{"claude-opus-4-6", "poe-glm"} {
@@ -348,6 +361,9 @@ func TestHandleModelsPredictableHasNoCost(t *testing.T) {
 	s := &Server{predictableOnly: true, logger: slog.Default()}
 	rec := httptest.NewRecorder()
 	s.handleModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
 
 	var got []map[string]json.RawMessage
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {

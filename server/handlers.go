@@ -2991,7 +2991,7 @@ func (s *Server) getModelList() []ModelInfo {
 				info.APIType = modelInfo.APIType
 				info.APIModelName = modelInfo.APIModelName
 				info.MaxContextTokens, _ = modelsdev.LookupContextLimit(modelInfo.BaseURL, modelInfo.APIModelName)
-				info.Cost = newModelCost(modelInfo.BaseURL, modelInfo.APIModelName)
+				info.Cost = lookupModelCost(modelInfo)
 			}
 			modelList = append(modelList, info)
 		}
