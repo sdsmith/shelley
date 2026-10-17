@@ -56,10 +56,9 @@ export interface CostNotation {
 const SURCHARGE_STAR = "*";
 const TIERED_PREFIX = "**";
 
-// "$5", "$0.50", "$0.075" — trailing zeros trimmed (shortest form) but at
-// least two decimals whenever the value is fractional, so a rate never reads
-// as less precise than cents. Never rounds a real rate: extra decimals
-// appear exactly when the real rate needs them.
+// Always at least two decimals — a round dollar renders "$5.00", a fractional
+// rate "$0.50" — with further decimals exactly when the real rate needs them
+// ("$0.075"). Never rounds a real rate.
 //
 // toPrecision(12) first: the upstream catalog ships float-noise literals
 // ("0.09999999999999999" for 0.1), and twelve significant digits collapse
@@ -70,7 +69,7 @@ function formatRate(v: number): string {
   let s = String(Number(v.toPrecision(12)));
   if (s.includes("e")) s = expandExponent(s);
   const dot = s.indexOf(".");
-  if (dot < 0) return s;
+  if (dot < 0) return `${s}.00`;
   if (s.length - dot - 1 === 1) return `${s}0`;
   return s;
 }

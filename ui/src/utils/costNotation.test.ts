@@ -30,21 +30,21 @@ function eq(
 // Table-driven breakdown cases.
 eq(
   { input: 2, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
-  "$2/$0.50/$10",
+  "$2.00/$0.50/$10.00",
   null,
   "plain triple",
 );
 
-// Decimal trimming: integers stay bare, fractional values keep at least two
+// Decimal trimming: integers render two decimals, fractional values keep at least two
 // decimals, further decimals appear exactly when the real rate needs them.
 const base = { output: 10, cache_read: 0.5, cache_write: 0, tiers: [] };
-eq({ ...base, input: 5 }, "$5/$0.50/$10", null, "integer rate stays bare");
-eq({ ...base, input: 0.5 }, "$0.50/$0.50/$10", null, "one decimal pads to two");
-eq({ ...base, input: 2.5 }, "$2.50/$0.50/$10", null, "fractional keeps two decimals");
-eq({ ...base, input: 0.075 }, "$0.075/$0.50/$10", null, "third decimal kept");
-eq({ ...base, input: 0.0025 }, "$0.0025/$0.50/$10", null, "never rounds a real rate");
-eq({ ...base, input: 825.24 }, "$825.24/$0.50/$10", null, "two decimals on a large rate");
-eq({ input: 2, output: 6.25, cache_read: 0.075, cache_write: 0, tiers: [] }, "$2/$0.075/$6.25", null, "each slot formats independently");
+eq({ ...base, input: 5 }, "$5.00/$0.50/$10.00", null, "integer rate renders two decimals");
+eq({ ...base, input: 0.5 }, "$0.50/$0.50/$10.00", null, "one decimal pads to two");
+eq({ ...base, input: 2.5 }, "$2.50/$0.50/$10.00", null, "fractional keeps two decimals");
+eq({ ...base, input: 0.075 }, "$0.075/$0.50/$10.00", null, "third decimal kept");
+eq({ ...base, input: 0.0025 }, "$0.0025/$0.50/$10.00", null, "never rounds a real rate");
+eq({ ...base, input: 825.24 }, "$825.24/$0.50/$10.00", null, "two decimals on a large rate");
+eq({ input: 2, output: 6.25, cache_read: 0.075, cache_write: 0, tiers: [] }, "$2.00/$0.075/$6.25", null, "each slot formats independently");
 
 // The upstream catalog carries float noise ("0.09999999999999999" for 0.1);
 // rates must read as the intended decimal, not the noise.
@@ -66,7 +66,7 @@ eq(
 // must survive unrounded.
 eq(
   { input: 0.1095892, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
-  "$0.1095892/$0.50/$10",
+  "$0.1095892/$0.50/$10.00",
   null,
   "a seven-significant-digit rate survives unrounded",
 );
@@ -76,13 +76,13 @@ eq(
 // ("$5e-7" tells the user nothing), whatever a future catalog refresh ships.
 eq(
   { input: 5e-7, output: 10, cache_read: 0.5, cache_write: 0, tiers: [] },
-  "$0.0000005/$0.50/$10",
+  "$0.0000005/$0.50/$10.00",
   null,
   "sub-1e-6 rate renders as a plain decimal",
 );
 eq(
   { input: 10, output: 1e21, cache_read: 0.5, cache_write: 0, tiers: [] },
-  "$10/$0.50/$1000000000000000000000",
+  "$10.00/$0.50/$1000000000000000000000.00",
   null,
   "1e21-and-up rate renders as a plain decimal",
 );
@@ -91,7 +91,7 @@ eq(
 // unambiguous — a missing cache discount must not read as a free one.
 eq(
   { input: 2, output: 10, cache_read: 0, cache_write: 0, tiers: [] },
-  "$2/-/$10",
+  "$2.00/-/$10.00",
   null,
   "missing cache pricing dashes the cached slot",
 );
@@ -101,7 +101,7 @@ eq(
 // the cached slot alone.
 eq(
   { input: 0, output: 0, cache_read: 0.05, cache_write: 0, tiers: [] },
-  "$0/$0.05/$0",
+  "$0.00/$0.05/$0.00",
   null,
   "zero input and output render as $0",
 );
@@ -109,7 +109,7 @@ eq(
 // A cache-write surcharge stars the cached slot.
 eq(
   { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25, tiers: [] },
-  "$5/$0.50*/$25",
+  "$5.00/$0.50*/$25.00",
   "* Surcharge:\n- cache writes $6.25/M",
   "surcharge stars the cached slot",
   "cache-write surcharge — listed rates are short-context base rates",
@@ -119,8 +119,8 @@ eq(
 // short-context base rates, not the whole story.
 eq(
   { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 100000 }] },
-  "**$1/$2/$3",
-  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
+  "**$1.00/$2.00/$3.00",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2.00/$4.00/$6.00 @ above 100k input",
   "tiered pricing prefixes **",
   "tiered pricing applies — listed rates are short-context base rates",
 );
@@ -128,13 +128,13 @@ eq(
 // The PRD's combined example — both sections, tier rates tier-local, the
 // tier's own surcharge starred, threshold in k:
 //   * Surcharge:
-//   - cache writes $1/M
+//   - cache writes $1.00/M
 //   ** Tiered pricing (not reflected in conversation cumulative cost):
-//   - $2/$4*/$6 @ above 100k input
+//   - $2.00/$4.00*/$6.00 @ above 100k input
 eq(
   { input: 1, output: 3, cache_read: 2, cache_write: 1, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 2, threshold_tokens: 100000 }] },
-  "**$1/$2*/$3",
-  "* Surcharge:\n- cache writes $1/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4*/$6 @ above 100k input",
+  "**$1.00/$2.00*/$3.00",
+  "* Surcharge:\n- cache writes $1.00/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $2.00/$4.00*/$6.00 @ above 100k input",
   "combined ** prefix and surcharge star",
   "cache-write surcharge; tiered pricing applies — listed rates are short-context base rates",
 );
@@ -143,7 +143,7 @@ eq(
 // does, showing the base cache-write rate.
 eq(
   { input: 5, output: 25, cache_read: 0.5, cache_write: 0.125, tiers: [] },
-  "$5/$0.50*/$25",
+  "$5.00/$0.50*/$25.00",
   "* Surcharge:\n- cache writes $0.125/M",
   "tooltip: surcharge section only",
   "cache-write surcharge — listed rates are short-context base rates",
@@ -153,15 +153,15 @@ eq(
 // notation with its token threshold.
 eq(
   { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 100000 }] },
-  "**$1/$2/$3",
-  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 100k input",
+  "**$1.00/$2.00/$3.00",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2.00/$4.00/$6.00 @ above 100k input",
   "tooltip: tiered section only",
   "tiered pricing applies — listed rates are short-context base rates",
 );
 eq(
   { input: 1, output: 3, cache_read: 2, cache_write: 0, tiers: [{ input: 2, output: 6, cache_read: 4, cache_write: 0, threshold_tokens: 262144 }] },
-  "**$1/$2/$3",
-  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/$4/$6 @ above 262k input",
+  "**$1.00/$2.00/$3.00",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2.00/$4.00/$6.00 @ above 262k input",
   "tooltip: threshold renders in k",
   "tiered pricing applies — listed rates are short-context base rates",
 );
@@ -176,8 +176,8 @@ eq(
       { input: 4, output: 12, cache_read: 8, cache_write: 0, threshold_tokens: 256000 },
     ],
   },
-  "**$1/$2/$3",
-  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2/-/$6 @ above 128k input\n- $4/$8/$12 @ above 256k input",
+  "**$1.00/$2.00/$3.00",
+  "** Tiered pricing (not reflected in conversation cumulative cost):\n- $2.00/-/$6.00 @ above 128k input\n- $4.00/$8.00/$12.00 @ above 256k input",
   "tooltip: one line per tier in order",
   "tiered pricing applies — listed rates are short-context base rates",
 );
@@ -188,7 +188,7 @@ eq(
     input: 1, output: 3, cache_read: 2, cache_write: 0.125,
     tiers: [{ input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0.1, threshold_tokens: 100000 }],
   },
-  "**$1/$2*/$3",
+  "**$1.00/$2.00*/$3.00",
   "* Surcharge:\n- cache writes $0.125/M\n** Tiered pricing (not reflected in conversation cumulative cost):\n- $0.50/$0.05*/$2.50 @ above 100k input",
   "tooltip: PRD example verbatim",
   "cache-write surcharge; tiered pricing applies — listed rates are short-context base rates",
@@ -199,7 +199,7 @@ eq(
 // the tooltip still explains the surcharge.
 eq(
   { input: 2, output: 10, cache_read: 0, cache_write: 0.1, tiers: [] },
-  "$2/-*/$10",
+  "$2.00/-*/$10.00",
   "* Surcharge:\n- cache writes $0.10/M",
   "surcharge stars a dashed cached slot",
   "cache-write surcharge — listed rates are short-context base rates",

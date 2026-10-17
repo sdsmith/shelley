@@ -193,12 +193,12 @@ test.describe("Model picker (PrimeVue)", () => {
         hasText: "predictable",
       })
       .first();
-    await expect(plainOption.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
+    await expect(plainOption.locator(".model-picker-option-cost")).toHaveText("$3.00/$0.30/$15.00");
 
     // The dominant source renders under the plain option too, and the
     // cost-first ordering holds for it.
     await expect(plainOption.locator(".model-picker-option-sublabel")).toHaveText(
-      "$3/$0.30/$15 · $PREDICTABLE",
+      "$3.00/$0.30/$15.00 · $PREDICTABLE",
     );
 
     // Cost and source share one grey line (cost first), so priced rows keep
@@ -207,7 +207,7 @@ test.describe("Model picker (PrimeVue)", () => {
     const sourcedOption = panel.locator(".p-select-option", { hasText: "Sourced Twin" });
     await expect(sourcedOption.locator(".model-picker-option-sublabel")).toHaveCount(1);
     await expect(sourcedOption.locator(".model-picker-option-sublabel")).toHaveText(
-      "$3/$0.30/$15 · Twin B",
+      "$3.00/$0.30/$15.00 · Twin B",
     );
 
     // The unpriced twin: no cost anywhere — silence, not a zero. Its
@@ -220,7 +220,7 @@ test.describe("Model picker (PrimeVue)", () => {
     // separator, no source.
     const costOnlyOption = panel.locator(".p-select-option", { hasText: "Cost-Only Twin" });
     await expect(costOnlyOption.locator(".model-picker-option-sublabel")).toHaveText(
-      "$3/$0.30/$15",
+      "$3.00/$0.30/$15.00",
     );
 
     // The bare twin — no cost, no source — renders no grey line at all, not
@@ -253,7 +253,7 @@ test.describe("Model picker (PrimeVue)", () => {
     // source sub-label, even though the install has just the one source.
     const modelRow = panel.locator(".p-select-option", { hasText: "Priced Twin" });
     await expect(modelRow.locator(".model-picker-option-sublabel")).toHaveText(
-      "$3/$0.30/$15 · $PREDICTABLE",
+      "$3.00/$0.30/$15.00 · $PREDICTABLE",
     );
     await expect(
       panel.locator(".p-select-option:not(:has(.model-picker-option-source))"),
@@ -272,7 +272,7 @@ test.describe("Model picker (PrimeVue)", () => {
     // tooltip with the details, and the markers also get a spoken form.
     const markedOption = panel.locator(".p-select-option", { hasText: "Marked Twin" });
     const markedCost = markedOption.locator(".model-picker-option-cost");
-    await expect(markedCost).toHaveText("**$1/$2*/$3");
+    await expect(markedCost).toHaveText("**$1.00/$2.00*/$3.00");
     await markedCost.hover();
     const tooltipText = page.locator(".p-tooltip-text");
     await tooltipText.waitFor();
@@ -385,9 +385,9 @@ test.describe("Model picker (PrimeVue)", () => {
     await expect(recentRow.locator(".model-picker-option-name")).toHaveText("predictable");
     // The recent row renders through the same option template, pricing
     // included — and its source, now that every option names one.
-    await expect(recentRow.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
+    await expect(recentRow.locator(".model-picker-option-cost")).toHaveText("$3.00/$0.30/$15.00");
     await expect(recentRow.locator(".model-picker-option-sublabel")).toHaveText(
-      "$3/$0.30/$15 · $PREDICTABLE",
+      "$3.00/$0.30/$15.00 · $PREDICTABLE",
     );
   });
 
