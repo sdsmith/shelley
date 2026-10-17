@@ -1,7 +1,11 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -81,47 +85,114 @@ func newSubagentDoneFixture(t *testing.T, subResponse string) *subagentDoneFixtu
 	}
 }
 
-// Ending a turn does not wake the parent, whether the parent delegated the
-// turn or the user drove the child directly; only message_parent does. A
-// subagent can end many turns (waiting on background jobs, chatting with the
-// user), and each wake would re-read the parent's whole context.
-func TestSubagentTurnEndDoesNotWakeParent(t *testing.T) {
+// A delegated turn that ends with a plain reply — no message_parent — must
+// still resolve the parent's wait: both the subagent tool's ack and the
+// parent's own instructions say the subagent's messages will wake it, so
+// Shelley forwards the terminal message, attributed to the subagent. Without
+// the forward the parent waits forever (seen in the wild: a round-2 review
+// summary agent wrote its report as its final text and stalled the whole
+// review tree). A user-driven turn with no delegation pending still wakes
+// nobody: only work the parent asked for reports back.
+func TestUnreportedDelegatedTurnForwardsFinalMessage(t *testing.T) {
 	server, database, held, parent := newBtwTest(t)
 	ctx := t.Context()
-	child, err := database.CreateSubagentConversation(ctx, "quiet-child", parent.ConversationID, nil)
+	child, err := database.CreateSubagentConversation(ctx, "silent-worker", parent.ConversationID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSubagentRunner(server).RunSubagent(ctx, child.ConversationID, "echo: delegated turn", "predictable", ""); err != nil {
+	if _, err := NewSubagentRunner(server).RunSubagent(ctx, child.ConversationID, "echo: delegated answer", "predictable", ""); err != nil {
 		t.Fatal(err)
 	}
-	releaseAndWaitIdle(t, server, child.ConversationID, held.waitCall(t, "echo: delegated turn"))
+	releaseAndWaitIdle(t, server, child.ConversationID, held.waitCall(t, "echo: delegated answer"))
+
+	forward := `Subagent "silent-worker" ended its turn without sending a final message_parent report. Its final message is forwarded below.` +
+		"\n\ndelegated answer"
+	wrapped := `<subagent_message conversation_id="` + child.ConversationID + `" slug="silent-worker">` +
+		"\n" + forward + "\n</subagent_message>"
+	releaseAndWaitIdle(t, server, parent.ConversationID, held.waitCall(t, wrapped))
+
+	// A user-driven turn with no delegation pending wakes nobody. The
+	// explicit report below lands after any spurious forward would have, so
+	// reading the parent's rows once it arrives settles the check.
 	response := postBtwChat(t, server, child.ConversationID,
 		ChatRequest{Message: "echo: manual child turn", Model: "predictable"})
 	if response.Code != 202 {
 		t.Fatalf("manual child turn status=%d body=%s", response.Code, response.Body.String())
 	}
 	releaseAndWaitIdle(t, server, child.ConversationID, held.waitCall(t, "echo: manual child turn"))
-
-	// An explicit report is the parent's first wake.
-	if err := NewSubagentRunner(server).MessageParent(ctx, child.ConversationID, "explicit report"); err != nil {
+	if err := NewSubagentRunner(server).MessageParent(ctx, child.ConversationID, "explicit report", true); err != nil {
 		t.Fatal(err)
 	}
-	wrapped := `<subagent_message conversation_id="` + child.ConversationID + `" slug="quiet-child">` +
+	wrapped = `<subagent_message conversation_id="` + child.ConversationID + `" slug="silent-worker">` +
 		"\nexplicit report\n</subagent_message>"
 	releaseAndWaitIdle(t, server, parent.ConversationID, held.waitCall(t, wrapped))
-	for _, m := range listMessages(t, database, parent.ConversationID) {
+
+	want := []string{forward, "explicit report"}
+	if got := senderReports(t, database, parent.ConversationID); !slices.Equal(got, want) {
+		t.Fatalf("parent heard %q from the subagent, want %q", got, want)
+	}
+}
+
+// A delegated turn that ends while its background bash job still runs must
+// not report yet — that was the noise that removed unconditional turn-end
+// notices. The job's exit opens another turn, and that turn's end is the one
+// that forwards.
+func TestTurnEndForwardWaitsForRunningBackgroundJob(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir()) // keep the job log out of /tmp
+	server, database, _ := newTestServer(t)
+	defer stopActiveConversationLoops(server)
+	server.toolSetConfig.BashBackgroundAfter = 50 * time.Millisecond
+
+	parent, err := database.CreateConversation(t.Context(), nil, true, nil, strPtr("predictable"), db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := database.CreateSubagentConversation(t.Context(), "job-worker", parent.ConversationID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := filepath.Join(t.TempDir(), "gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSubagentRunner(server).RunSubagent(t.Context(), child.ConversationID,
+		"bash: echo started; read -r _ < "+gate+"; echo finished", "predictable", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForMessageContaining(t, database, child.ConversationID, "moved to background job", 10*time.Second)
+	waitForIdle(t, server, child.ConversationID)
+
+	if err := os.WriteFile(gate, []byte("go\n"), 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, func() bool {
+		return len(senderReports(t, database, parent.ConversationID)) == 1
+	})
+	// The forward carries the job-notice turn's reply, proving the first
+	// turn's end stayed quiet while the job ran.
+	if got := senderReports(t, database, parent.ConversationID)[0]; !strings.Contains(got, "job turn done") {
+		t.Fatalf("forward = %q, want the job-notice turn's final message", got)
+	}
+}
+
+// senderReports returns the texts of every message attributed to a subagent
+// sender, in order.
+func senderReports(t *testing.T, database *db.DB, conversationID string) []string {
+	t.Helper()
+	var out []string
+	for _, m := range listMessages(t, database, conversationID) {
 		if m.Type != string(db.MessageTypeUser) || m.UserData == nil {
 			continue
 		}
 		data, ok, err := parseSenderMessageUserData([]byte(*m.UserData))
-		if err != nil || !ok {
-			continue
+		if err != nil {
+			t.Fatal(err)
 		}
-		if data.Text != "explicit report" {
-			t.Fatalf("child turn end woke the parent with %q", data.Text)
+		if ok {
+			out = append(out, data.Text)
 		}
 	}
+	return out
 }
 
 // Cleanup must never evict a conversation manager whose agent is mid-turn

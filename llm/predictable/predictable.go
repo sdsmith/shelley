@@ -378,6 +378,12 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 			return s.makeResponse("predictable spoken words", inputTokens), nil
 		}
 
+		// The turn a background-job notice opens. Distinct text so tests can
+		// tell which turn of a subagent a turn-end forward came from.
+		if strings.Contains(inputText, "<background_job") {
+			return s.makeResponse("job turn done", inputTokens), nil
+		}
+
 		// Default response for undefined inputs
 		return s.makeResponse("edit predictable.go to add a response for that one...", inputTokens), nil
 	}

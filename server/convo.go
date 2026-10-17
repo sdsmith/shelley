@@ -183,6 +183,14 @@ type ConversationManager struct {
 	// onTurnStartRejected restarts queue draining after a failed turn-start
 	// write rolls the manager back to idle.
 	onTurnStartRejected func()
+	// onTurnEnd, set for delegated subagents, observes each finished turn
+	// (loop.Config.OnTurnEnd) so an unreported delegated turn can still
+	// resolve the parent's wait. Set once before the manager is published.
+	onTurnEnd func(ctx context.Context, end loop.TurnEnd)
+	// delegationPending is true while work delegated through the subagent
+	// tool awaits its final message_parent report; RunSubagent sets it and a
+	// final report or the turn-end fallback clears it. Guarded by cm.mu.
+	delegationPending bool
 	// recordDrainedQueued records a queued item's messages and removes the item
 	// from the queue in one transaction.
 	recordDrainedQueued func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) (int64, error)
@@ -437,6 +445,30 @@ func (cm *ConversationManager) IsAgentWorking() bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.agentWorking
+}
+
+// markDelegationPending records that the subagent tool delegated work to
+// this conversation whose final message_parent report has not arrived.
+func (cm *ConversationManager) markDelegationPending() {
+	cm.mu.Lock()
+	cm.delegationPending = true
+	cm.mu.Unlock()
+}
+
+// clearDelegationPending records that delegated work resolved: a final
+// message_parent report landed, or the turn-end fallback already forwarded.
+func (cm *ConversationManager) clearDelegationPending() {
+	cm.mu.Lock()
+	cm.delegationPending = false
+	cm.mu.Unlock()
+}
+
+// awaitingDelegationReport reports whether delegated work is still waiting
+// on a final report.
+func (cm *ConversationManager) awaitingDelegationReport() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.delegationPending
 }
 
 // SetDistilling marks the conversation as distilling. While true, queued
@@ -2166,6 +2198,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	// the new loop below. Capturing it in callbacks lets them reject events from
 	// this loop after a later cancellation or reset advances the generation.
 	generation := cm.loopGeneration + 1
+	onTurnEnd := cm.onTurnEnd
 	recordMessage := cm.recordMessage
 	logger := cm.logger
 	cwd := cm.cwd
@@ -2335,6 +2368,14 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		OnStreamReset:  sf.Reset,
 		InjectMessages: func(ctx context.Context) (loop.Injection, error) {
 			return cm.takeInjectable(ctx, generation, nudger)
+		},
+		OnTurnEnd: func(ctx context.Context, end loop.TurnEnd) {
+			if !cm.isCurrentLoopGeneration(generation) {
+				return
+			}
+			if onTurnEnd != nil {
+				onTurnEnd(ctx, end)
+			}
 		},
 	})
 

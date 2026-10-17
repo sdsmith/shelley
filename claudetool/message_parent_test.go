@@ -6,19 +6,22 @@ import (
 	"testing"
 )
 
-type parentMessengerFunc func(context.Context, string, string) error
+type parentMessengerFunc func(context.Context, string, string, bool) error
 
-func (f parentMessengerFunc) MessageParent(ctx context.Context, conversationID, text string) error {
-	return f(ctx, conversationID, text)
+func (f parentMessengerFunc) MessageParent(ctx context.Context, conversationID, text string, endTurn bool) error {
+	return f(ctx, conversationID, text, endTurn)
 }
 
 func TestMessageParentEndTurn(t *testing.T) {
 	var sent []string
 	tool := (&MessageParentTool{
 		ConversationID: "child",
-		Messenger: parentMessengerFunc(func(_ context.Context, id, text string) error {
+		Messenger: parentMessengerFunc(func(_ context.Context, id, text string, endTurn bool) error {
 			if id != "child" {
 				t.Fatalf("recipient %q, want child", id)
+			}
+			if endTurn && text != "done" {
+				t.Fatalf("final message = %q, want done", text)
 			}
 			sent = append(sent, text)
 			return nil

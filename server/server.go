@@ -29,6 +29,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/loop"
 	"shelley.exe.dev/mcp"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/server/diskspace"
@@ -1069,6 +1070,12 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		manager.keepRecentTokens = s.keepRecentTokens()
 		switch role {
 		case roleSubagent:
+			// A delegated turn that ends without a message_parent report
+			// must still resolve the parent's wait; handleSubagentTurnEnd
+			// decides when that fallback fires.
+			manager.onTurnEnd = func(ctx context.Context, end loop.TurnEnd) {
+				s.handleSubagentTurnEnd(ctx, manager, end)
+			}
 		case roleBtwReader:
 			manager.decorateService = func(service llm.Service) (llm.Service, error) {
 				return newBtwService(context.Background(), s.logger, s.db, btwIdentity.ParentConversationID, btwIdentity.ParentPointer, btwReaderParentHistoryLimit, service)

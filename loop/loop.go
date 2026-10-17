@@ -86,6 +86,12 @@ type Config struct {
 	// must record the messages before returning them, so the DB sequence
 	// order matches the in-memory splice point. An error ends the turn.
 	InjectMessages func(ctx context.Context) (Injection, error)
+	// OnTurnEnd, if set, runs when a turn finishes, after its terminal
+	// message is recorded and the same conversation's turn-end bookkeeping
+	// (git state, fatal-exit teardown) is done. It observes every end: a
+	// final reply, the marker a turn-ending tool records, or a failed run.
+	// The context is cancellation-proof: a handler may still persist.
+	OnTurnEnd func(ctx context.Context, end TurnEnd)
 }
 
 // Injection is what Config.InjectMessages splices into a running turn.
@@ -95,6 +101,16 @@ type Injection struct {
 	History []llm.Message
 	// Messages are appended to history.
 	Messages []llm.Message
+}
+
+// TurnEnd describes the end of one turn. Message is the last assistant row
+// the turn recorded — the final reply, the invisible marker a turn-ending
+// tool writes, or the error row of a failed turn — or the zero message when
+// nothing was recorded. Err is the run's error, nil for natural and
+// tool-ended turns; context.Canceled means Stop tore the turn down.
+type TurnEnd struct {
+	Message llm.Message
+	Err     error
 }
 
 // Loop manages a conversation turn with an LLM including tool execution and message recording.
@@ -122,6 +138,8 @@ type Loop struct {
 	injectMessages   func(ctx context.Context) (Injection, error)
 	thinkingLevel    llm.ThinkingLevel
 	promptCacheKey   string
+	onTurnEnd        func(ctx context.Context, end TurnEnd)
+	lastTurnMessage  llm.Message // last recorded assistant row of the running turn
 	notify           chan struct{} // signaled when a message is queued or retry requested
 	retryPending     bool          // set by Retry() to re-run processLLMRequest with current history
 }
@@ -161,6 +179,7 @@ func NewLoop(config Config) *Loop {
 		injectMessages:   config.InjectMessages,
 		thinkingLevel:    config.ThinkingLevel,
 		promptCacheKey:   config.PromptCacheKey,
+		onTurnEnd:        config.OnTurnEnd,
 		notify:           make(chan struct{}, 1),
 	}
 }
@@ -350,6 +369,7 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 	l.mu.Lock()
 	history := append([]llm.Message(nil), l.history...)
 	thinkingLevel := l.thinkingLevel
+	l.lastTurnMessage = llm.Message{}
 	l.mu.Unlock()
 
 	err := Run(ctx, RunConfig{
@@ -365,11 +385,26 @@ func (l *Loop) processLLMRequest(ctx context.Context) error {
 		Hooks:          l.hooks(),
 		Logger:         l.logger,
 	})
-	if err != nil {
-		return err
+	if err == nil {
+		l.checkGitStateChange(ctx)
 	}
-	l.checkGitStateChange(ctx)
-	return nil
+	// Report the turn's end before the error reaches Go's fatal-exit path,
+	// which retires this loop's generation: an OnTurnEnd handler that guards
+	// on the generation must still see the event.
+	l.fireTurnEnd(ctx, err)
+	return err
+}
+
+// fireTurnEnd delivers the turn's outcome once, on a context that survives
+// cancellation, so a handler can still persist side effects.
+func (l *Loop) fireTurnEnd(ctx context.Context, err error) {
+	if l.onTurnEnd == nil {
+		return
+	}
+	l.mu.Lock()
+	message := l.lastTurnMessage
+	l.mu.Unlock()
+	l.onTurnEnd(context.WithoutCancel(ctx), TurnEnd{Message: message, Err: err})
 }
 
 func (l *Loop) pending(ctx context.Context, messages []llm.Message) ([]llm.Message, error) {
@@ -416,6 +451,11 @@ func (l *Loop) hooks() Hooks {
 		OnResponse: func(ctx context.Context, r Response) error {
 			l.mu.Lock()
 			l.totalUsage.Add(r.Usage)
+			// Every assistant row of the turn passes through here; the last
+			// one recorded before the run returns is the terminal row
+			// (final reply, turn-ending marker, or error row) reported by
+			// OnTurnEnd.
+			l.lastTurnMessage = r.Message
 			l.mu.Unlock()
 			if err := l.recordMessage(ctx, r.Message, r.Usage, nil); err != nil {
 				return err

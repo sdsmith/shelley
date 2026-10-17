@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/loop"
 )
 
 // SubagentRunner implements claudetool.SubagentRunner.
@@ -125,13 +128,21 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 
 	// A busy subagent receives the message at its current turn's next LLM
 	// round, without interrupting the turn (see InjectMessage).
+	//
+	// Mark the delegation before the turn can start: a turn that finishes
+	// before this call returns must still count as awaiting a report, and
+	// handleSubagentTurnEnd consumes the mark to decide whether to forward
+	// the subagent's terminal message to the parent.
+	manager.markDelegationPending()
 	if manager.IsAgentWorking() {
 		if err := manager.InjectMessage(ctx, s, modelID, userMessage); err != nil {
+			manager.clearDelegationPending()
 			return "", fmt.Errorf("failed to send message to busy subagent: %w", err)
 		}
 		return "message sent into the subagent's current turn; it reports back with message_parent.", nil
 	}
 	if _, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage); err != nil {
+		manager.clearDelegationPending()
 		return "", fmt.Errorf("failed to accept user message: %w", err)
 	}
 	return "message sent; the subagent works in the background and reports back with message_parent.", nil
@@ -160,12 +171,32 @@ func (s *Server) inheritedSubagentModel(ctx context.Context, conversationID stri
 }
 
 // MessageParent implements claudetool.ParentMessenger.
-func (r *SubagentRunner) MessageParent(ctx context.Context, conversationID, text string) error {
+func (r *SubagentRunner) MessageParent(ctx context.Context, conversationID, text string, endTurn bool) error {
 	conv, err := r.server.db.GetConversationByID(ctx, conversationID)
 	if err != nil {
 		return fmt.Errorf("load conversation: %w", err)
 	}
-	return r.server.messageParent(ctx, *conv, text)
+	if err := r.server.messageParent(ctx, *conv, text); err != nil {
+		return err
+	}
+	if endTurn {
+		// The final report reached the parent: the delegation is resolved,
+		// so the turn-end fallback must not forward a duplicate of it.
+		r.server.markDelegationResolved(conversationID)
+	}
+	return nil
+}
+
+// markDelegationResolved clears the awaiting-report mark on a subagent whose
+// final message_parent report was delivered. Without an active manager no
+// turn is running, so no fallback can fire either.
+func (s *Server) markDelegationResolved(subagentID string) {
+	s.mu.Lock()
+	mgr, active := s.activeConversations[subagentID]
+	s.mu.Unlock()
+	if active {
+		mgr.clearDelegationPending()
+	}
 }
 
 // isDelegatedSubagent reports whether conv is a subagent created by the
@@ -203,6 +234,85 @@ func (s *Server) messageParent(ctx context.Context, conv generated.Conversation,
 		Text:                 text,
 	})
 	return parent.InjectMessage(ctx, s, modelID, llm.UserStringMessage(text))
+}
+
+// handleSubagentTurnEnd runs when a delegated subagent's turn finishes. The
+// subagent tool promises the parent a message_parent report, and the parent
+// is told to end its turn and wait for it — but a model can end the turn
+// with a plain reply instead, which since e09659a7 notifies nobody: the
+// parent waits forever (seen in the wild: a round-2 review summary agent
+// wrote its report as its final text and stalled the whole review tree).
+// Unconditional turn-end notices were removed because intermediate turns —
+// background jobs still running, the user chatting with the subagent —
+// restarted the parent over and over for nothing. So forward only when the
+// turn carried delegated work, sent no final report, and left nothing
+// running that could open a later turn: at that point nothing else will ever
+// resolve the parent's wait.
+func (s *Server) handleSubagentTurnEnd(ctx context.Context, cm *ConversationManager, end loop.TurnEnd) {
+	if errors.Is(end.Err, context.Canceled) {
+		return // Stop owns this end; a stopped tree must not be restarted.
+	}
+	if !cm.awaitingDelegationReport() {
+		return
+	}
+	busy, err := s.hasActiveDelegatedWork(ctx, cm.conversationID)
+	if err != nil {
+		s.logger.Error("Failed to check delegated work on subagent turn end", "error", err, "conversationID", cm.conversationID)
+		return
+	}
+	if busy {
+		return // A running job or grandchild opens another turn; report then.
+	}
+	queued, err := s.db.GetQueuedMessages(ctx, cm.conversationID)
+	if err != nil {
+		s.logger.Error("Failed to read queued messages on subagent turn end", "error", err, "conversationID", cm.conversationID)
+		return
+	}
+	if len(queued) > 0 {
+		return // A queued follow-up (e.g. an injected prompt) opens another turn.
+	}
+	// Clear before delivering: messageParent can start the parent's turn,
+	// and a parent that immediately delegates new work to this subagent
+	// must not have that mark wiped by this turn's cleanup.
+	cm.clearDelegationPending()
+
+	conv, err := s.db.GetConversationByID(ctx, cm.conversationID)
+	if err != nil {
+		s.logger.Error("Failed to load subagent for turn-end forward", "error", err, "conversationID", cm.conversationID)
+		return
+	}
+	if !isDelegatedSubagent(*conv) {
+		return
+	}
+	if err := s.messageParent(ctx, *conv, forwardedTurnEndText(*conv, end)); err != nil {
+		s.logger.Error("Failed to forward unreported subagent turn end to parent", "error", err, "subagentID", cm.conversationID)
+		return
+	}
+	s.logger.Info("Forwarded unreported subagent turn end to parent", "subagentID", cm.conversationID, "slug", derefString(conv.Slug))
+}
+
+// forwardedTurnEndText renders the fallback report the parent receives: a
+// one-line note that the subagent ended without reporting, then its
+// terminal message — the final reply, or the error row of a failed turn.
+func forwardedTurnEndText(conv generated.Conversation, end loop.TurnEnd) string {
+	var body strings.Builder
+	for _, c := range end.Message.Content {
+		if c.Type == llm.ContentTypeText && c.Text != "" {
+			if body.Len() > 0 {
+				body.WriteString("\n")
+			}
+			body.WriteString(c.Text)
+		}
+	}
+	kind := "without sending a final message_parent report"
+	if end.Err != nil {
+		kind = "with an error"
+	}
+	header := fmt.Sprintf("Subagent %q ended its turn %s.", derefString(conv.Slug), kind)
+	if body.Len() == 0 {
+		return header + " It left no final message; open its conversation to see what happened."
+	}
+	return header + " Its final message is forwarded below.\n\n" + body.String()
 }
 
 // Ensure SubagentRunner implements claudetool.SubagentRunner.
