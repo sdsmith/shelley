@@ -16974,10 +16974,10 @@ kbd {
 }
 
 /* Option markup: name (+ one grey sub-label line: the cost breakdown first,
-   then the source after a `·` separator when the source label renders), a
-   check mark on the current selection, and a "not ready" badge. The wrapper
-   fills the option (whose padding is zeroed in statusPickerDt), so it takes
-   every pointer pick. */
+   then the source after a `·` separator when the model has one), a check
+   mark on the current selection, and a "not ready" badge. The wrapper fills
+   the option (whose padding is zeroed in statusPickerDt), so it takes every
+   pointer pick. */
 .p-select-overlay.model-picker-panel .model-picker-option {
   flex: 1;
   display: flex;

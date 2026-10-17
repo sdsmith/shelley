@@ -16,9 +16,9 @@
      - Options carry one grey sub-label line under the name: the model's
        cost breakdown (utils/costNotation, from the model list's cost field;
        tooltip on the cost span when a marker applies), then the source
-       after a `·` when the source label renders. Source sub-labels only
-       render when the catalog actually spans more than one source — a
-       single-gateway install never repeats its hostname under every option.
+       after a `·` when the model has one. Every option names its source in
+       every install — single-gateway installs included — so provenance is
+       always visible.
      - Tier-2 models stay behind a "All models (N)" toggle; an active search
        spans all models so nothing is unfindable.
      PrimeVue owns open/close, outside-click, Escape and viewport-aware flip
@@ -141,7 +141,7 @@
           <!-- The tooltip (markers only) sits on the cost span; unpriced
                models render no price at all — silence, not a zero. -->
           <span
-            v-if="option.notation || showsSource(option)"
+            v-if="option.notation || option.source"
             class="model-picker-option-sublabel"
           >
             <span
@@ -156,13 +156,13 @@
               option.notation.srText
             }}</span>
             <span
-              v-if="option.notation && showsSource(option)"
+              v-if="option.notation && option.source"
               class="model-picker-option-separator"
               aria-hidden="true"
               >{{ " · " }}</span
             >
             <!-- The class hooks the e2e's source-label assertions; it has no styles of its own. -->
-            <span v-if="showsSource(option)" class="model-picker-option-source">{{
+            <span v-if="option.source" class="model-picker-option-source">{{
               option.source
             }}</span>
           </span>
@@ -475,33 +475,6 @@ const decorated = computed<PickerModel[]>(() =>
     notation: m.cost ? formatModelCost(m.cost) : null,
   })),
 );
-
-// Source sub-labels are pure noise when every model comes from the same
-// place — and even in a customized install, the main gateway's name repeated
-// under dozens of options drowns out the few models it actually matters for.
-// So label only the models whose source differs from the dominant (most
-// common) source; in a single-source install that's nothing.
-const dominantSource = computed(() => {
-  const counts = new Map<string, number>();
-  for (const m of props.models) {
-    if (!m.source) continue;
-    counts.set(m.source, (counts.get(m.source) || 0) + 1);
-  }
-  let best = "";
-  let bestCount = 0;
-  for (const [src, n] of counts) {
-    if (n > bestCount) {
-      best = src;
-      bestCount = n;
-    }
-  }
-  return best;
-});
-
-// Whether the option's source sub-label renders — only when the source
-// differs from the dominant one (see dominantSource).
-const showsSource = (option: PickerOption): boolean =>
-  !!option.source && option.source !== dominantSource.value;
 
 // Tier 2 models are overshadowed by a better available sibling; they're kept
 // behind an "All models" toggle so the common case stays uncluttered. Absent

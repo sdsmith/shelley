@@ -23,9 +23,9 @@ const MARKED_TOOLTIP = [
 ].join("\n");
 
 // A model list where pricing is observable: every entry priced (the base
-// model plain), one twin carrying markers, sourced twins (their sources
-// differ from the dominant one, so the source label renders under the
-// current gate), and one entry the catalog cannot price.
+// model plain), one twin carrying markers, sourced twins (a second source,
+// so a multi-source install is covered), and one entry the catalog cannot
+// price.
 async function mockPricedModelList(page: import("@playwright/test").Page) {
   await page.route("**/api/models", async (route) => {
     const models = await (await route.fetch()).json();
@@ -63,6 +63,29 @@ async function mockPricedModelList(page: import("@playwright/test").Page) {
   });
 }
 
+// A single-source install where pricing is observable: every model from the
+// same one source, every entry priced. The twin gives the picker a second
+// row while every option still names the install's only source.
+async function mockSingleSourcePricedModelList(page: import("@playwright/test").Page) {
+  await page.route("**/api/models", async (route) => {
+    const models = await (await route.fetch()).json();
+    await route.fulfill({
+      json: [
+        ...models.map((m) => ({ ...m, source: "$PREDICTABLE", cost: PLAIN_COST })),
+        {
+          ...models[0],
+          id: "predictable-twin",
+          display_name: "Priced Twin",
+          source: "$PREDICTABLE",
+          cost: PLAIN_COST,
+          ready: true,
+          tier: 1,
+        },
+      ],
+    });
+  });
+}
+
 // The unified model + effort picker (ChatStatusContent -> ModelPicker.vue) is
 // built on PrimeVue <Select>. It renders on the new-conversation screen. Here
 // we exercise the PrimeVue-specific open/select behavior, the inline
@@ -74,6 +97,9 @@ test.describe("Model picker (PrimeVue)", () => {
   }) => {
     test.setTimeout(60000);
 
+    // A single-source install: the one model comes from one source, which
+    // the picker names under every option.
+    await mockSingleSourcePricedModelList(page);
     await page.goto("/new");
     await page.waitForLoadState("domcontentloaded");
 
@@ -101,8 +127,11 @@ test.describe("Model picker (PrimeVue)", () => {
       expect(Math.round(box.y + box.height)).toBe(viewport.height);
     }
 
-    // In a single-source install, no source sub-labels are rendered.
-    await expect(panel.locator(".model-picker-option-source")).toHaveCount(0);
+    // Even in a single-source install, every option names its source.
+    await expect(
+      panel.locator(".p-select-option:not(:has(.model-picker-option-source))"),
+    ).toHaveCount(0);
+    await expect(options.first().locator(".model-picker-option-source")).toHaveText("$PREDICTABLE");
 
     // Pick the first model -> its label shows in the trigger and the raw model
     // id (not the pretty label) persists to localStorage. The panel stays
@@ -147,6 +176,12 @@ test.describe("Model picker (PrimeVue)", () => {
       .first();
     await expect(plainOption.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
 
+    // The gate is gone: the dominant source renders under the plain option
+    // too, and the cost-first ordering holds for it.
+    await expect(plainOption.locator(".model-picker-option-sublabel")).toHaveText(
+      "$3/$0.30/$15 · $PREDICTABLE",
+    );
+
     // Cost and source share one grey line (cost first), so priced rows keep
     // the height of any other row with a sub-label — one name line plus at
     // most one grey line.
@@ -163,6 +198,28 @@ test.describe("Model picker (PrimeVue)", () => {
     const unpricedOption = panel.locator(".p-select-option", { hasText: "Unpriced Twin" });
     await expect(unpricedOption.locator(".model-picker-option-cost")).toHaveCount(0);
     await expect(unpricedOption.locator(".model-picker-option-sublabel")).toHaveText("Twin C");
+  });
+
+  test("a single-source install names the source on every option, cost first", async ({
+    page,
+  }) => {
+    await mockSingleSourcePricedModelList(page);
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+    const panel = page.locator(".model-picker-panel");
+
+    // Every option carries the source sub-label even though the install has
+    // just the one source, and the grey line keeps the cost-first ordering:
+    // $cost · $source.
+    await expect(
+      panel.locator(".p-select-option:not(:has(.model-picker-option-source))"),
+    ).toHaveCount(0);
+    const modelRow = panel.locator(".p-select-option", { hasText: "Priced Twin" });
+    await expect(modelRow.locator(".model-picker-option-sublabel")).toHaveText(
+      "$3/$0.30/$15 · $PREDICTABLE",
+    );
   });
 
   test("shows the pricing tooltip only on marked options", async ({ page }) => {
@@ -200,7 +257,9 @@ test.describe("Model picker (PrimeVue)", () => {
   });
 
   test("closed trigger keeps showing just the model name and effort", async ({ page }) => {
-    await mockPricedModelList(page);
+    // A single-source install, so the trigger is pinned against the source
+    // sub-labels every option now carries: none of it reaches the trigger.
+    await mockSingleSourcePricedModelList(page);
     // Store an effort so the trigger's suffix is present to assert; mark the
     // default profile applied, or the composer's first-load profile
     // application resets the level (see the recent-pricing test).
@@ -212,12 +271,12 @@ test.describe("Model picker (PrimeVue)", () => {
     const picker = page.locator(".model-picker.p-select");
     await expect(picker).toBeVisible({ timeout: 10000 });
 
-    // Pick the marked model and close: the trigger names the model and the
-    // effort, never the price.
+    // Pick the priced, sourced model and close: the trigger names the model
+    // and the effort — never the price or the source.
     await picker.click();
     const panel = page.locator(".model-picker-panel");
-    await panel.locator(".p-select-option", { hasText: "Marked Twin" }).click();
-    await expect(picker.locator(".model-picker-value-name")).toHaveText("Marked Twin");
+    await panel.locator(".p-select-option", { hasText: "Priced Twin" }).click();
+    await expect(picker.locator(".model-picker-value-name")).toHaveText("Priced Twin");
     await expect(picker.locator(".model-picker-value-effort")).toHaveText("· high");
     await expect(picker.locator(".model-picker-value")).not.toContainText("$");
   });
@@ -285,8 +344,11 @@ test.describe("Model picker (PrimeVue)", () => {
     const recentRow = panel.locator(".p-select-option:has(.model-picker-option-effort)");
     await expect(recentRow.locator(".model-picker-option-name")).toHaveText("predictable");
     // The recent row renders through the same option template, pricing
-    // included.
+    // included — and its source, now that every option names one.
     await expect(recentRow.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
+    await expect(recentRow.locator(".model-picker-option-sublabel")).toHaveText(
+      "$3/$0.30/$15 · $PREDICTABLE",
+    );
   });
 
   test("keeps model and directory inline when they fit, then wraps when needed", async ({
