@@ -239,8 +239,8 @@ func TestLookupReasoningCapabilities(t *testing.T) {
 			model: "claude-haiku-5-5",
 			found: true,
 			want: ReasoningCapabilities{Supported: true, Levels: []llm.ThinkingLevel{
-				llm.ThinkingLevelLow, llm.ThinkingLevelMedium, llm.ThinkingLevelHigh,
-				llm.ThinkingLevelXHigh, llm.ThinkingLevelMax,
+				llm.ThinkingLevelOff, llm.ThinkingLevelLow, llm.ThinkingLevelMedium,
+				llm.ThinkingLevelHigh, llm.ThinkingLevelXHigh, llm.ThinkingLevelMax,
 			}},
 		},
 		{
@@ -413,7 +413,7 @@ func TestLookupCost(t *testing.T) {
 		// First-party models resolve by name alone even when the endpoint is
 		// an unknown gateway host.
 		{"anthropic via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-opus-4-6", true, Cost{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25}},
-		{"sonnet 5.5 via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-sonnet-5-5", true, Cost{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
+		{"sonnet 5.5 via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-sonnet-5-5", true, Cost{Input: 2, Output: 10, CacheRead: 0.1, CacheWrite: 2.5}},
 		{"haiku 5.5 via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-haiku-5-5", true, Cost{Input: 0.1, Output: 0.5, CacheRead: 0.01, CacheWrite: 0.125}},
 		{"anthropic dated", "", "claude-sonnet-4-5-20250929", true, Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}},
 		// OpenAI snapshot names carry a date suffix that models.dev omits.
