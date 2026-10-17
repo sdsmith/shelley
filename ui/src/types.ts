@@ -134,6 +134,12 @@ export interface Model {
   // Reasoning level applied when a conversation carries no explicit
   // thinking_level override. Empty when the provider picks its own default.
   default_reasoning_level?: string;
+  // Per-model pricing, USD per million tokens, from the embedded models.dev
+  // catalog — the same source the usage-cost math prices against. Absent when
+  // the catalog cannot price the model's (base URL, wire name) identity. Flat
+  // wire shape: see utils/costNotation's ModelPricing; NOT services/api.ts's
+  // ModelCostDTO, which types the old /api/model-costs nested tier envelope.
+  cost?: import("./utils/costNotation").ModelPricing;
 }
 
 export interface ChatRequest {

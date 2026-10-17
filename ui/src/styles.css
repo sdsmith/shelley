@@ -16973,10 +16973,11 @@ kbd {
   }
 }
 
-/* Option markup: name (+ source sub-label only in multi-source installs),
-   a check mark on the current selection, and a "not ready" badge. The
-   wrapper fills the option (whose padding is zeroed in statusPickerDt), so it
-   takes every pointer pick. */
+/* Option markup: name (+ one grey sub-label line: the cost breakdown first,
+   then the source after a `·` separator when the source label renders), a
+   check mark on the current selection, and a "not ready" badge. The wrapper
+   fills the option (whose padding is zeroed in statusPickerDt), so it takes
+   every pointer pick. */
 .p-select-overlay.model-picker-panel .model-picker-option {
   flex: 1;
   display: flex;
@@ -16996,7 +16997,9 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.p-select-overlay.model-picker-panel .model-picker-option-source {
+/* The sub-label is one line however much of it renders, so priced and
+   unpriced rows share a shape. The tooltip hangs on the cost span alone. */
+.p-select-overlay.model-picker-panel .model-picker-option-sublabel {
   font-size: var(--font-size-11);
   color: var(--text-secondary);
   overflow: hidden;

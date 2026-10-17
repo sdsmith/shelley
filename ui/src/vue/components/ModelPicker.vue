@@ -13,9 +13,13 @@
      - Model ids are humanized via prettyModelLabels (claude-opus-4.8 ->
        "Claude Opus 4.8"); unknown ids pass through verbatim and label
        collisions fall back to raw ids.
-     - Source sub-labels only render when the catalog actually spans more
-       than one source — a single-gateway install never repeats its hostname
-       under every option.
+     - Options carry one grey sub-label line under the name: the model's
+       cost breakdown (utils/costNotation, from the model list's cost field;
+       tooltip on the cost span when a marker applies), then the source
+       after a `·` when the source label renders. Source sub-labels only
+       render when the catalog actually spans more than one source — a
+       single-gateway install never repeats its hostname under every option.
+       (The pricing PRD's phase 4 removes that gate.)
      - Tier-2 models stay behind a "All models (N)" toggle; an active search
        spans all models so nothing is unfindable.
      PrimeVue owns open/close, outside-click, Escape and viewport-aware flip
@@ -135,11 +139,30 @@
       <div class="model-picker-option" @mousedown.stop.prevent="choose(option, index)">
         <div class="model-picker-option-content">
           <span class="model-picker-option-name">{{ option.label }}</span>
+          <!-- One grey line under the name: cost breakdown first, then the
+               source after a `·` when the source label renders. The tooltip
+               (markers only) sits on the cost span. Unpriced models render
+               no price at all — silence, not a zero. -->
           <span
-            v-if="option.source && option.source !== dominantSource"
-            class="model-picker-option-source"
-            >{{ option.source }}</span
+            v-if="option.notation || showsSource(option)"
+            class="model-picker-option-sublabel"
           >
+            <span
+              v-if="option.notation"
+              v-tooltip.top="option.notation.tooltip"
+              class="model-picker-option-cost"
+              >{{ option.notation.breakdown }}</span
+            >
+            <span
+              v-if="option.notation && showsSource(option)"
+              class="model-picker-option-separator"
+              aria-hidden="true"
+              >{{ " · " }}</span
+            >
+            <span v-if="showsSource(option)" class="model-picker-option-source">{{
+              option.source
+            }}</span>
+          </span>
         </div>
         <span
           v-if="option.kind === 'recent' && option.recentEffortLabel"
@@ -338,12 +361,16 @@ import { prettyModelLabels } from "../../utils/modelNames";
 import { THINKING_LEVELS, type ThinkingLevel } from "./thinkingLevel";
 import { useI18n } from "../composables/i18n";
 import type { Model } from "../../types";
+import { formatModelCost, type CostNotation } from "../../utils/costNotation";
 import { ConversationsListKey } from "../composables/subagentLive";
 import { recentModelCombinations, type RecentThinkingLevel } from "./recentModelCombinations";
 import type { SettingsDifference, SettingsKnob } from "../composables/profiles";
 import { COMPACT_IN_PLACE_TOOL } from "./autoCompaction";
 
-type PickerModel = Model & { label: string };
+// notation is the option's pricing sub-label (null when the catalog cannot
+// price the model — silence, not a zero), computed once per model so recent
+// rows, which spread the same object, carry identical notation.
+type PickerModel = Model & { label: string; notation: CostNotation | null };
 type PickerOption = PickerModel & {
   kind: "model" | "recent";
   pickerValue: string;
@@ -439,7 +466,11 @@ if (!conversations) throw new Error("ModelPicker requires ConversationsListKey")
 
 const labels = computed(() => prettyModelLabels(props.models));
 const decorated = computed<PickerModel[]>(() =>
-  props.models.map((m) => ({ ...m, label: labels.value.get(m.id) || m.id })),
+  props.models.map((m) => ({
+    ...m,
+    label: labels.value.get(m.id) || m.id,
+    notation: m.cost ? formatModelCost(m.cost) : null,
+  })),
 );
 
 // Source sub-labels are pure noise when every model comes from the same
@@ -463,6 +494,10 @@ const dominantSource = computed(() => {
   }
   return best;
 });
+
+// Whether the option's source sub-label renders under that gate.
+const showsSource = (option: PickerOption): boolean =>
+  !!option.source && option.source !== dominantSource.value;
 
 // Tier 2 models are overshadowed by a better available sibling; they're kept
 // behind an "All models" toggle so the common case stays uncluttered. Absent

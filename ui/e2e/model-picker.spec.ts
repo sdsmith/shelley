@@ -1,6 +1,62 @@
 import { test, expect } from "@playwright/test";
 import { testWorkingDirectory } from "./helpers";
 
+// Cost-bearing model-list entries for the picker's pricing sub-label (see
+// ModelPicker.vue and utils/costNotation); values mirror the PRD's notation
+// examples. tiers is always present on the wire ([] when the model has none).
+const PLAIN_COST = { input: 3, output: 15, cache_read: 0.3, cache_write: 0, tiers: [] };
+const MARKED_COST = {
+  input: 1,
+  output: 3,
+  cache_read: 2,
+  cache_write: 0.125,
+  tiers: [
+    { input: 0.5, output: 2.5, cache_read: 0.05, cache_write: 0, threshold_tokens: 100000 },
+  ],
+};
+// formatModelCost(MARKED_COST) — the surcharge and tier sections, verbatim.
+const MARKED_TOOLTIP = [
+  "* Surcharge:",
+  "- cache writes $0.125/M",
+  "** Tiered pricing (not reflected in conversation cumulative cost):",
+  "- $0.50/$0.05/$2.50 @ above 100k input",
+].join("\n");
+
+// A model list where pricing is observable: every entry priced (the base
+// model plain), one twin carrying markers, sourced twins (their sources
+// differ from the dominant one, so the source label renders under the
+// current gate), and one entry the catalog cannot price.
+async function mockPricedModelList(page: import("@playwright/test").Page) {
+  await page.route("**/api/models", async (route) => {
+    const models = await (await route.fetch()).json();
+    await route.fulfill({
+      json: [
+        ...models.map((m) => ({ ...m, source: "$PREDICTABLE", cost: PLAIN_COST })),
+        {
+          ...models[0],
+          id: "predictable-marked",
+          display_name: "Marked Twin",
+          source: "Twin A",
+          cost: MARKED_COST,
+        },
+        {
+          ...models[0],
+          id: "predictable-sourced",
+          display_name: "Sourced Twin",
+          source: "Twin B",
+          cost: PLAIN_COST,
+        },
+        {
+          ...models[0],
+          id: "predictable-unpriced",
+          display_name: "Unpriced Twin",
+          source: "Twin C",
+        },
+      ],
+    });
+  });
+}
+
 // The unified model + effort picker (ChatStatusContent -> ModelPicker.vue) is
 // built on PrimeVue <Select>. It renders on the new-conversation screen. Here
 // we exercise the PrimeVue-specific open/select behavior, the inline
@@ -66,6 +122,138 @@ test.describe("Model picker (PrimeVue)", () => {
     await panel.getByRole("button", { name: "Manage Models" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(panel).toBeHidden();
+  });
+
+  test("shows the cost breakdown as a priced option's sub-label", async ({ page }) => {
+    await mockPricedModelList(page);
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+    const panel = page.locator(".model-picker-panel");
+
+    // The plain priced option: just the triple.
+    const plainOption = panel.locator(".p-select-option", { hasText: "predictable" }).first();
+    await expect(plainOption.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
+
+    // Cost and source share one grey line (cost first), so priced rows keep
+    // the height of any other row with a sub-label — one name line plus at
+    // most one grey line.
+    const sourcedOption = panel.locator(".p-select-option", { hasText: "Sourced Twin" });
+    await expect(sourcedOption.locator(".model-picker-option-sublabel")).toHaveCount(1);
+    await expect(sourcedOption.locator(".model-picker-option-sublabel")).toHaveText(
+      "$3/$0.30/$15 · Twin B",
+    );
+    const plainBox = (await plainOption.boundingBox())!;
+    const sourcedBox = (await sourcedOption.boundingBox())!;
+    expect(Math.abs(sourcedBox.height - plainBox.height)).toBeLessThan(1);
+
+    // The unpriced twin: no cost anywhere — silence, not a zero.
+    const unpricedOption = panel.locator(".p-select-option", { hasText: "Unpriced Twin" });
+    await expect(unpricedOption.locator(".model-picker-option-cost")).toHaveCount(0);
+    await expect(unpricedOption.locator(".model-picker-option-sublabel")).toHaveText("Twin C");
+  });
+
+  test("shows the pricing tooltip only on marked options", async ({ page }) => {
+    await mockPricedModelList(page);
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+    const panel = page.locator(".model-picker-panel");
+
+    // A plain (unmarked) price: hovering the cost span opens no tooltip.
+    await panel.locator(".p-select-option", { hasText: "Sourced Twin" }).hover();
+    await expect(page.locator(".p-tooltip")).toHaveCount(0);
+
+    // A marked one (surcharge + tier): the tooltip carries the details.
+    const markedCost = panel
+      .locator(".p-select-option", { hasText: "Marked Twin" })
+      .locator(".model-picker-option-cost");
+    await expect(markedCost).toHaveText("**$1/$2*/$3");
+    await markedCost.hover();
+    await expect(page.locator(".p-tooltip-text")).toHaveText(MARKED_TOOLTIP, {
+      useInnerText: true,
+    });
+  });
+
+  test("closed trigger keeps showing just the model name and effort", async ({ page }) => {
+    await mockPricedModelList(page);
+    await page.goto("/new");
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+
+    // Pick the marked model and close: the trigger names the model, never
+    // the price.
+    await picker.click();
+    const panel = page.locator(".model-picker-panel");
+    await panel.locator(".p-select-option", { hasText: "Marked Twin" }).click();
+    await expect(picker.locator(".model-picker-value-name")).toHaveText("Marked Twin");
+    await expect(picker.locator(".model-picker-value")).not.toContainText("$");
+  });
+
+  test("recent combinations carry the same pricing", async ({ page, request }) => {
+    const response = await request.post("/api/conversations/new", {
+      data: {
+        message: "echo recent pricing",
+        model: "predictable",
+        cwd: testWorkingDirectory(),
+        conversation_options: { thinking_level: "high" },
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+    const { conversation_id: conversationId } = await response.json();
+
+    // Keep this page's picker history scoped to the conversation we just
+    // created (see the recent-combinations test below).
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends NativeEventSource {
+        constructor(url: string | URL, options?: EventSourceInit) {
+          super(url, options);
+          this.addEventListener("message", (event) => {
+            const data = JSON.parse(event.data) as { conversation_list_patch?: unknown };
+            if (data.conversation_list_patch) event.stopImmediatePropagation();
+          });
+        }
+      };
+    });
+    await page.route("**/api/conversations/snapshot", async (route) => {
+      const snapshotResponse = await route.fetch();
+      const snapshot = (await snapshotResponse.json()) as {
+        conversations: Array<{ conversation_id: string }>;
+        hash: string;
+      };
+      const seed = snapshot.conversations.find(
+        (conversation) => conversation.conversation_id === conversationId,
+      );
+      if (!seed) throw new Error("recent pricing conversation missing from snapshot");
+      await route.fulfill({
+        response: snapshotResponse,
+        json: { ...snapshot, conversations: [seed] },
+      });
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem("shelley.thinkingLevel.v2", "medium");
+      localStorage.setItem("shelley.profileApplied", "Default");
+    });
+
+    await mockPricedModelList(page);
+    // Recent combinations are taken as the panel opens, so wait for the
+    // conversation snapshot before opening it.
+    const snapshotLoaded = page.waitForResponse("**/api/conversations/snapshot");
+    await page.goto("/new");
+    await snapshotLoaded;
+    const picker = page.locator(".model-picker.p-select");
+    await expect(picker).toBeVisible({ timeout: 10000 });
+    await picker.click();
+    const panel = page.locator(".model-picker-panel");
+    await expect(panel.locator(".model-picker-group-label")).toHaveText("Recent");
+    const recentRow = panel.locator(".p-select-option:has(.model-picker-option-effort)");
+    await expect(recentRow.locator(".model-picker-option-name")).toHaveText("predictable");
+    // The recent row renders through the same option template, pricing
+    // included.
+    await expect(recentRow.locator(".model-picker-option-cost")).toHaveText("$3/$0.30/$15");
   });
 
   test("keeps model and directory inline when they fit, then wraps when needed", async ({
