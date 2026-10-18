@@ -16,10 +16,16 @@ export async function openWorkspaceTool(page: Page, name: string): Promise<void>
     return;
   }
   await page.getByRole("button", { name: "More options", exact: true }).click();
-  await page
+  const item = page
     .locator(".chat-overflow-popover")
-    .getByRole("button", { name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) })
-    .click();
+    .getByRole("button", { name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) });
+  // The popover item must actually be visible at the current width —
+  // workspace tools are overflow-mobile-action items, which the desktop
+  // media query hides. Assert before clicking so a regression that hides
+  // or removes the item fails this expect in seconds instead of timing
+  // out the click at the test's full timeout.
+  await expect(item).toBeVisible();
+  await item.click();
 }
 
 export async function startNewConversationFromHeader(page: Page): Promise<void> {

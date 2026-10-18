@@ -4,55 +4,55 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConversationViaAPI, openWorkspaceTool, withTempDir } from "./helpers";
+import { hermeticGitEnvironment } from "../scripts/git-test-env";
 
 const shelleyBin = resolve(fileURLToPath(new URL("../../bin/shelley", import.meta.url)));
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: hermeticGitEnvironment(),
+  }).trim();
 }
 
 type DiffsViewport = "desktop" | "mobile";
 
-async function openDiffViewer(page: Page, slug: string, viewport: DiffsViewport = "desktop") {
+async function openDiffViewer(page: Page, slug: string, viewport: DiffsViewport) {
   if (viewport === "desktop") {
     await page.setViewportSize({ width: 1800, height: 900 });
     await page.addInitScript(() => localStorage.setItem("diff-viewer-layout", "sidebar"));
   } else {
-    // Phone width per the suite convention (running-work.spec.ts). The
+    // Mobile width per the running-work.spec.ts precedent. The
     // sidebar-layout override is desktop-only: below 768px the viewer
     // renders its mobile header regardless, so there is nothing to pin.
     await page.setViewportSize({ width: 390, height: 500 });
   }
   await page.goto(`/c/${slug}`);
   await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
-  if (viewport === "desktop") {
-    // Desktop reaches diffs via the toolbar button; the overflow-menu item
-    // is mobile-only and hidden here (see openWorkspaceTool in helpers).
-    await openWorkspaceTool(page, "Diffs");
-  } else {
-    // Phones keep workspace tools in the overflow menu. Assert the diffs
-    // item is actually visible at this width before clicking, so a
-    // misplaced overflow-mobile-action / show-on-desktop-only class fails
-    // loudly here instead of timing out a click.
-    await page.getByRole("button", { name: "More options", exact: true }).click();
-    const item = page.locator(".chat-overflow-popover .overflow-menu-item", {
-      hasText: /diffs/i,
-    });
-    await expect(item).toBeVisible();
-    await item.click();
-  }
+  // Both entries run through openWorkspaceTool: desktop via the toolbar
+  // button (the popover item is overflow-mobile-action, hidden at desktop
+  // widths), mobile via the helper's popover fallback. Either way the
+  // helper asserts the affordance it settles on is actually visible at
+  // the current width before clicking, so a viewport-class regression —
+  // the diffs item removed from the popover, moved to a desktop-only
+  // surface, or given a hide-at-mobile rule — fails that expect in
+  // seconds instead of timing out the click.
+  await openWorkspaceTool(page, "Diffs");
   const overlay = page.locator(".diff-viewer-overlay");
   await expect(overlay).toBeVisible({ timeout: 30000 });
   return overlay;
 }
 
 /** The changes-view fixture repo: two separated hunks in one file plus a
- *  lock file, then a dirty working tree, so the viewer opens on working
- *  changes. Shared by the desktop and phone-width entry tests. */
+ *  lock file, then a dirty working tree. Shared by this spec's entry
+ *  tests. */
 function seedChangesRepo(tempDir: string): string {
   const repo = join(tempDir, "repo");
   mkdirSync(repo);
   git(repo, "init");
+  git(repo, "config", "commit.gpgsign", "false");
+  git(repo, "config", "core.hooksPath", "/dev/null");
   git(repo, "config", "user.name", "Changes Test");
   git(repo, "config", "user.email", "changes@example.com");
 
@@ -76,6 +76,39 @@ function seedChangesRepo(tempDir: string): string {
   return repo;
 }
 
+/** The rename fixture repo: a pure-rename commit followed by a
+ *  rename-with-edit commit. Shared by the desktop and mobile rename
+ *  tests. */
+function seedRenameRepo(tempDir: string): string {
+  const repo = join(tempDir, "repo");
+  mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "commit.gpgsign", "false");
+  git(repo, "config", "core.hooksPath", "/dev/null");
+  git(repo, "config", "user.name", "Rename Test");
+  git(repo, "config", "user.email", "rename@example.com");
+
+  const appPath = join(repo, "src", "app.ts");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  // Enough lines that a one-line edit still reads as a rename to git.
+  const lines = Array.from({ length: 20 }, (_, index) => `export const v${index} = ${index};`);
+  writeFileSync(appPath, lines.join("\n") + "\n");
+  git(repo, "add", "src/app.ts");
+  git(repo, "commit", "-m", "Base commit\n\nPrompt: rename base");
+
+  // A pure rename: one hunkless fragment, mechanically trivial.
+  git(repo, "mv", "src/app.ts", "src/renamed.ts");
+  git(repo, "commit", "-am", "Pure rename\n\nPrompt: rename pure");
+
+  // A rename with a small edit: not mechanical, so it stays expanded —
+  // but the header must still show the from → to move.
+  git(repo, "mv", "src/renamed.ts", "src/moved.ts");
+  lines[1] = "export const v1 = 11;";
+  writeFileSync(join(repo, "src", "moved.ts"), lines.join("\n") + "\n");
+  git(repo, "commit", "-am", "Rename and edit\n\nPrompt: rename edit");
+  return repo;
+}
+
 test.describe("Changes view", () => {
   test("shows every hunk on one page and default-collapses mechanical changes", async ({
     page,
@@ -85,7 +118,7 @@ test.describe("Changes view", () => {
       const repo = seedChangesRepo(tempDir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
-      const overlay = await openDiffViewer(page, slug);
+      const overlay = await openDiffViewer(page, slug, "desktop");
 
       // The viewer opens on dirty working changes, with Changes as the
       // default view. No tour is attached anywhere, so the switcher has
@@ -150,33 +183,10 @@ test.describe("Changes view", () => {
     request,
   }) => {
     await withTempDir("shelley-changes-rename-", async (tempDir) => {
-      const repo = join(tempDir, "repo");
-      mkdirSync(repo);
-      git(repo, "init");
-      git(repo, "config", "user.name", "Rename Test");
-      git(repo, "config", "user.email", "rename@example.com");
-
-      const appPath = join(repo, "src", "app.ts");
-      mkdirSync(join(repo, "src"), { recursive: true });
-      // Enough lines that a one-line edit still reads as a rename to git.
-      const lines = Array.from({ length: 20 }, (_, index) => `export const v${index} = ${index};`);
-      writeFileSync(appPath, lines.join("\n") + "\n");
-      git(repo, "add", "src/app.ts");
-      git(repo, "commit", "-m", "Base commit\n\nPrompt: rename base");
-
-      // A pure rename: one hunkless fragment, mechanically trivial.
-      git(repo, "mv", "src/app.ts", "src/renamed.ts");
-      git(repo, "commit", "-am", "Pure rename\n\nPrompt: rename pure");
-
-      // A rename with a small edit: not mechanical, so it stays expanded —
-      // but the header must still show the from → to move.
-      git(repo, "mv", "src/renamed.ts", "src/moved.ts");
-      lines[1] = "export const v1 = 11;";
-      writeFileSync(join(repo, "src", "moved.ts"), lines.join("\n") + "\n");
-      git(repo, "commit", "-am", "Rename and edit\n\nPrompt: rename edit");
+      const repo = seedRenameRepo(tempDir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
-      const overlay = await openDiffViewer(page, slug);
+      const overlay = await openDiffViewer(page, slug, "desktop");
 
       // The viewer opens on HEAD (clean working tree): the rename-and-edit
       // commit, expanded with the from → to header and the rendered diff.
@@ -219,6 +229,8 @@ test.describe("Changes view", () => {
       const repo = join(tempDir, "repo");
       mkdirSync(repo);
       git(repo, "init");
+      git(repo, "config", "commit.gpgsign", "false");
+      git(repo, "config", "core.hooksPath", "/dev/null");
       git(repo, "config", "user.name", "Toolbar Test");
       git(repo, "config", "user.email", "toolbar@example.com");
 
@@ -237,7 +249,7 @@ test.describe("Changes view", () => {
       git(repo, "commit", "-am", "Update lines\n\nPrompt: toolbar commit");
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
-      const overlay = await openDiffViewer(page, slug);
+      const overlay = await openDiffViewer(page, slug, "desktop");
 
       // The layout toggles share the fixed switcher row, costing no extra
       // vertical space, and the side-by-side toggle is desktop-only.
@@ -288,7 +300,7 @@ test.describe("Changes view", () => {
     });
   });
 
-  test("at phone width, the overflow menu opens the same hunk collapse", async ({
+  test("on mobile, diffs open via the overflow menu with the same collapse semantics", async ({
     page,
     request,
   }) => {
@@ -314,24 +326,26 @@ test.describe("Changes view", () => {
       const overflowToggle = switcher.getByRole("button", { name: /long lines/ });
       await expect(overflowToggle).toHaveText("Wrap");
 
-      // Commit selection runs through the picker modal — the sidebar commit
-      // list and its range radios are desktop-only, and picking a row closes
-      // the modal with the range applied.
+      // Commit selection runs through the picker modal: the sidebar commit
+      // list is desktop-only, and the picker modal carries the same range
+      // controls. Picking a row applies the current range and closes the
+      // modal.
       await overlay.locator(".commit-picker-trigger").click();
       const modal = overlay.locator(".commit-picker-modal");
       await expect(modal).toBeVisible();
       await modal.locator("button", { hasText: "Update app and lock" }).click();
       await expect(modal).toBeHidden();
 
-      // The same collapse semantics as desktop: the real edit expanded, the
-      // lock file's chunk mechanical and collapsed behind the "generated"
-      // toggle.
+      // The same collapse semantics as desktop, at the same chunk count:
+      // the real edit expanded, the lock file's chunk mechanical and
+      // collapsed behind the "generated" toggle.
       const chunks = tourView.locator(".commit-tour-chunk");
+      await expect(chunks).toHaveCount(2);
       const appChunk = chunks.filter({ hasText: "src/app.ts" });
       const trivialChunk = chunks.filter({ hasText: "go.sum" });
       await expect(appChunk).toHaveCount(1);
       await expect(trivialChunk).toHaveCount(1);
-      await expect(appChunk.locator(".commit-tour-chunk-header code")).toHaveText(/src\/app\.ts/);
+      await expect(appChunk.locator(".commit-tour-chunk-header code")).toHaveText("src/app.ts");
       await expect(appChunk.locator(".commit-tour-chunk-body")).toBeVisible();
       await expect(trivialChunk.locator(".tour-trivial-label")).toHaveText("generated");
       await expect(trivialChunk.locator(".commit-tour-chunk-body")).toHaveCount(0);
@@ -343,6 +357,54 @@ test.describe("Changes view", () => {
       // The wrap toggle works here too, same as its desktop counterpart.
       await overflowToggle.click();
       await expect(overflowToggle).toHaveText("Scroll");
+    });
+  });
+
+  test("on mobile, rename labeling matches the desktop viewer", async ({ page, request }) => {
+    await withTempDir("shelley-changes-mobile-rename-", async (tempDir) => {
+      const repo = seedRenameRepo(tempDir);
+      const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
+      const overlay = await openDiffViewer(page, slug, "mobile");
+
+      // The viewer opens on HEAD (clean working tree): the rename-and-edit
+      // commit, expanded with the from → to header and the rendered diff.
+      const tourView = overlay.locator(".commit-tour-view");
+      await expect(tourView.locator(".commit-tour-chunk")).toHaveCount(1);
+      const editedChunk = tourView.locator(".commit-tour-chunk");
+      await expect(editedChunk.locator(".commit-tour-chunk-header code")).toHaveText(
+        /src\/renamed\.ts → src\/moved\.ts · \d+–\d+/,
+      );
+      await expect(editedChunk.locator(".tour-trivial-label")).toHaveCount(0);
+      await expect(editedChunk.locator(".commit-tour-chunk-body")).toBeVisible();
+
+      // The sidebar commit list is desktop-only; the picker modal carries
+      // the same range controls. Pin the range to a single commit inside
+      // the modal, then select the pure rename through it.
+      await overlay.locator(".commit-picker-trigger").click();
+      const modal = overlay.locator(".commit-picker-modal");
+      await expect(modal).toBeVisible();
+      await modal.getByRole("radio", { name: "Single commit" }).click();
+      await modal.locator("button", { hasText: "Pure rename" }).click();
+      await expect(modal).toBeHidden();
+
+      // The pure rename commit shows a collapsed chunk labeled from → to,
+      // with a "renamed" chip and no +0 −0 stat noise — assertions
+      // verbatim from the desktop rename test.
+      await expect(tourView.locator(".commit-tour-chunk")).toHaveCount(1);
+      const pureChunk = tourView.locator(".commit-tour-chunk");
+      await expect(pureChunk.locator(".commit-tour-chunk-header code")).toHaveText(
+        "src/app.ts → src/renamed.ts",
+      );
+      await expect(pureChunk.locator(".tour-trivial-label")).toHaveText("renamed");
+      await expect(pureChunk.locator(".commit-tour-chunk-stats")).toHaveCount(0);
+      await expect(pureChunk.locator(".commit-tour-chunk-body")).toHaveCount(0);
+
+      // Expanding reveals the raw rename metadata.
+      await pureChunk.locator(".commit-tour-chunk-toggle").click();
+      await expect(pureChunk.locator(".commit-tour-chunk-body")).toBeVisible();
+      await expect(pureChunk.locator(".commit-tour-chunk-body pre")).toContainText(
+        "rename from src/app.ts",
+      );
     });
   });
 });
