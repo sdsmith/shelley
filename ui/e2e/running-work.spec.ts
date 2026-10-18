@@ -361,14 +361,10 @@ test.describe("running work", () => {
       // middle's row, indented one step past it — level with the leaves.
       const jobRows = items.getByTestId("background-job");
       await expect(jobRows).toHaveCount(2, { timeout: 15000 });
-      const middleJob = jobRows.filter({ hasText: "echo fromsub" });
-      await expect(middleJob).toBeVisible({ timeout: 15000 });
-      const middleGroup = items.locator(".running-commands").filter({ hasText: "echo fromsub" });
-      await expect
-        .poll(() => middleGroup.evaluate((el) => el.previousElementSibling?.textContent ?? ""), {
-          timeout: 30_000,
-        })
-        .toContain("middletask");
+      const middleGroup = items.locator(`[data-conversation-id="${middleId}"]`);
+      const middleJob = middleGroup.getByTestId("background-job");
+      await expect(middleJob).toHaveCount(1, { timeout: 15000 });
+      await expect(middleJob.filter({ hasText: "echo fromsub" })).toBeVisible({ timeout: 15000 });
       const xs = await Promise.all(
         [
           middleRow.locator("strong"),

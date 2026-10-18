@@ -93,6 +93,7 @@ import BackgroundJobsList from "./BackgroundJobsList.vue";
 import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
 import { childrenByParent, descendantsOf, stripRows, workingDescendants } from "./conversationTree";
+import { everyJobStopping } from "../composables/backgroundJobs";
 import { api } from "../../services/api";
 
 const props = defineProps<{ conversationId: string }>();
@@ -158,7 +159,7 @@ const runningSubagentCount = computed(() => stopList.value.length);
 // The conversations the composable is polling — the open conversation plus
 // every descendant holding running commands. A descendant owner becomes a
 // strip row even when its turn is over, so its commands indent beneath it.
-const jobOwnerIds = computed(() => new Set(backgroundJobs.jobsByConversation.value.keys()));
+const conversationIdsWithJobs = computed(() => new Set(jobsByConversation.value.keys()));
 
 // Retention while expanded: every row the strip has shown — including the
 // Waiting scaffolding rows — stays until collapse, so finished work at any
@@ -170,7 +171,7 @@ const rows = computed(() =>
         props.conversationId,
         dedupedConversations.value,
         retainedIds.value,
-        jobOwnerIds.value,
+        conversationIdsWithJobs.value,
       )
     : [],
 );
@@ -197,16 +198,11 @@ function groupVisible(id: string): boolean {
 // Header actions: stop every live background command — the open
 // conversation's and its descendants' — / cancel every working descendant.
 // Each button greys out while its kind has nothing running; the commands
-// button also reads "Stopping…" while every live job sits in its group's
-// killing set (pruned as the jobs leave the polled lists).
-const allJobsStopping = computed(() => {
-  const groups = [...jobsByConversation.value.values()];
-  const live = groups.flatMap((group) => group.jobs ?? []);
-  return (
-    live.length > 0 &&
-    groups.every((group) => (group.jobs ?? []).every((job) => group.killing.has(job.job_id)))
-  );
-});
+// button also reads "Stopping…" while every live command sits in its
+// group's killing set (pruned as the jobs leave the polled lists); a group
+// whose list has not been fetched yet holds the state off — its commands
+// are unseen, so nothing can be stopping them.
+const allJobsStopping = computed(() => everyJobStopping([...jobsByConversation.value.values()]));
 
 function stopAllJobs() {
   // Snapshot: a group dropped or a job finished mid-loop is caught on the
@@ -243,7 +239,7 @@ function toggleWork() {
   emit("toggle");
 }
 
-function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
+function remember<T>(seen: readonly T[], current: readonly T[], key: (item: T) => string): T[] {
   const items = new Map<string, T>();
   for (const item of [...seen, ...current]) items.set(key(item), item);
   return [...items.values()];
@@ -259,7 +255,7 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
 // the first evaluation and would otherwise never fire, leaving the header
 // counting rows it never renders.
 watch(
-  [expanded, rows, backgroundJobs.jobsByConversation],
+  [expanded, rows, jobsByConversation],
   ([isExpanded, currentRows, liveGroups]) => {
     if (!isExpanded) {
       if (retainedIds.value.size > 0) retainedIds.value = new Set();

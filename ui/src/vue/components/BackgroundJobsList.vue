@@ -3,9 +3,12 @@
     class="running-commands"
     role="group"
     aria-label="Commands"
+    :data-conversation-id="conversationId"
     :style="{ '--strip-depth': depth ?? 0 }"
   >
     <div v-if="error" class="background-jobs-error" role="alert">{{ error }}</div>
+    <!-- "Loading…" stays up beside the alert while a first fetch keeps
+         failing: the poller genuinely is still retrying. -->
     <div v-if="loading" class="background-jobs-empty">Loading…</div>
     <div v-else-if="jobs.length === 0" class="background-jobs-empty">No running jobs.</div>
     <details
@@ -71,8 +74,7 @@ const group = computed(() => backgroundJobs.jobsByConversation.value.get(props.c
 const loading = computed(() => group.value?.jobs === null);
 const runningIds = computed(() => new Set((group.value?.jobs ?? []).map((job) => job.job_id)));
 const error = computed(() => group.value?.error ?? "");
-const NOT_KILLING = new Set<string>();
-const killing = computed(() => group.value?.killing ?? NOT_KILLING);
+const killing = computed(() => group.value?.killing ?? new Set<string>());
 </script>
 
 <style scoped>

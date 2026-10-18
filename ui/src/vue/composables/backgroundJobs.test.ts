@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { effectScope, nextTick, shallowRef } from "vue";
 import type { ConversationWithState } from "../../types";
-import { useBackgroundJobs } from "./backgroundJobs";
+import { everyJobStopping, useBackgroundJobs, type BackgroundJobsGroup } from "./backgroundJobs";
 
 // The composable polls the open conversation's tree: its own commands plus
 // every descendant's that reports running background jobs, each lifecycle
 // ending when that conversation's running count drops to zero. These tests
 // stub fetch (the api client's only egress), drive the polled list like
 // App's patch stream does — replacing the array — and use mock timers for
-// the 3s reschedule.
+// the poll reschedule.
 
 let seq = 0;
 function conv(id: string, parent: string | null, running = 0): ConversationWithState {
@@ -49,6 +49,7 @@ type Kill = { conversationId: string; jobId: string };
 let jobsByConv: Map<string, ReturnType<typeof job>[]>;
 let kills: Kill[];
 let failKills: Kill[];
+let failGets: Set<string>;
 let gets: string[];
 
 // Drain Vue's scheduler and the in-flight fetch chains (setImmediate is a
@@ -63,8 +64,10 @@ function stubFetch() {
     const url = String(input);
     const get = url.match(/\/api\/conversation\/([^/]+)\/background-jobs$/);
     if (get) {
-      gets.push(decodeURIComponent(get[1]));
-      return Response.json(jobsByConv.get(decodeURIComponent(get[1])) ?? []);
+      const id = decodeURIComponent(get[1]);
+      gets.push(id);
+      if (failGets.has(id)) return new Response("bg down", { status: 500 });
+      return Response.json(jobsByConv.get(id) ?? []);
     }
     const kill = url.match(/\/api\/conversation\/([^/]+)\/background-jobs\/([^/]+)\/kill$/);
     if (kill) {
@@ -101,6 +104,7 @@ test("polls the open conversation and its job-holding descendants, grouped per c
   ]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [
     conv("root", null, 1),
@@ -139,6 +143,7 @@ test("a descendant's poll stops and its group drops when its running count hits 
   ]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
   await drain();
@@ -166,6 +171,7 @@ test("nothing polls while no conversation in the tree reports running commands",
   jobsByConv = new Map();
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 0), conv("mid", "root", 0)]);
   await drain();
@@ -178,6 +184,7 @@ test("navigating to a conversation outside the tree stops every poll and clears 
   jobsByConv = new Map([["root", [job("jr")]]]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
   await drain();
@@ -210,11 +217,12 @@ test("stop() kills through the owning conversation; a failure lands on that grou
   ]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
   await drain();
 
-  await h.stop("mid", "jm1");
+  assert.equal(await h.stop("mid", "jm1"), true, "a sent stop returns true");
   assert.deepEqual(kills, [{ conversationId: "mid", jobId: "jm1" }], "kill hits the owning conversation");
   assert.equal(h.jobsByConversation.value.get("mid")?.error, "", "success keeps the group's error empty");
 
@@ -234,6 +242,7 @@ test("a running-count bump refetches the conversation's commands immediately", a
   ]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
   await drain();
@@ -244,7 +253,7 @@ test("a running-count bump refetches the conversation's commands immediately", a
 
   // Another command backgrounds: the count bumps and the group's list must
   // gain it within one round trip — the strip's stop-all has to cover
-  // exactly what the header counts, not whatever the last 3s tick saw.
+  // exactly what the header counts, not whatever the last poll tick saw.
   jobsByConv.set("mid", [job("jm1"), job("jm2")]);
   h.conversations.value = [conv("root", null, 1), conv("mid", "root", 2)];
   await drain();
@@ -259,10 +268,65 @@ test("stopping a command whose group already vanished is a quiet no-op", async (
   jobsByConv = new Map([["root", [job("jr")]]]);
   kills = [];
   failKills = [];
+  failGets = new Set();
   gets = [];
   const h = harness(t, [conv("root", null, 1)]);
   await drain();
-  await h.stop("ghost", "jg");
+  assert.equal(await h.stop("ghost", "jg"), false, "no group → false, no throw");
   assert.deepEqual(kills, [], "no endpoint hit");
   assert.equal(h.jobsByConversation.value.get("root")?.error, "", "no error recorded");
+});
+
+test("a failed fetch records on its own group, and the loop retries past it", async (t) => {
+  jobsByConv = new Map([
+    ["root", [job("jr")]],
+    ["mid", [job("jm1")]],
+  ]);
+  kills = [];
+  failKills = [];
+  failGets = new Set(["mid"]);
+  gets = [];
+  const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
+  await drain();
+  assert.ok(
+    h.jobsByConversation.value.get("mid")!.error.includes("bg down"),
+    "the failure lands on mid's group",
+  );
+  assert.equal(h.jobsByConversation.value.get("mid")?.jobs ?? null, null, "no list came back");
+  assert.equal(h.jobsByConversation.value.get("root")?.error, "", "the root's group untouched");
+
+  // The loop continues past a failure: the retry lands, the list arrives,
+  // and the error clears.
+  failGets = new Set();
+  const mids = gets.filter((id) => id === "mid").length;
+  t.mock.timers.tick(3000);
+  await drain();
+  assert.equal(gets.filter((id) => id === "mid").length, mids + 1, "the retry happened");
+  assert.deepEqual(
+    h.jobsByConversation.value.get("mid")?.jobs?.map((j) => j.job_id),
+    ["jm1"],
+  );
+  assert.equal(h.jobsByConversation.value.get("mid")?.error, "", "the success cleared the error");
+});
+
+test("everyJobStopping: a group whose list has not been fetched blocks the stopping state", () => {
+  const stopping: BackgroundJobsGroup = {
+    jobs: [job("jr")],
+    error: "",
+    killing: new Set(["jr"]),
+  };
+  const loading: BackgroundJobsGroup = { jobs: null, error: "", killing: new Set() };
+  assert.equal(everyJobStopping([stopping, loading]), false, "an unfetched list cannot be stopping");
+  assert.equal(
+    everyJobStopping([stopping, { jobs: [], error: "", killing: new Set() }]),
+    true,
+    "a fetched-but-empty list passes vacuously",
+  );
+  assert.equal(everyJobStopping([stopping]), true, "every live command in flight");
+  assert.equal(
+    everyJobStopping([stopping, { jobs: [job("jm")], error: "", killing: new Set() }]),
+    false,
+    "an unstopped live command holds the state off",
+  );
+  assert.equal(everyJobStopping([]), false, "nothing live");
 });

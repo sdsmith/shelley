@@ -8,14 +8,32 @@ export const BackgroundJobsKey: InjectionKey<ReturnType<typeof useBackgroundJobs
 
 // One polled conversation's live state: its commands (null while the first
 // fetch is in flight), the last fetch error, and the commands a stop call
-// is still in flight for.
+// is still in flight for. Readonly by contract: state is replaced per
+// update, never edited in place — a mutated handle would neither trigger
+// reactivity (the map's identity is what changes) nor survive the next
+// setGroup.
 export interface BackgroundJobsGroup {
-  jobs: BackgroundJob[] | null;
-  error: string;
-  killing: Set<string>;
+  readonly jobs: readonly BackgroundJob[] | null;
+  readonly error: string;
+  readonly killing: ReadonlySet<string>;
 }
 
 const POLL_MS = 3000;
+
+// True when every fetched command across every group has a stop call in
+// flight — the strip header's "Stopping…" state. A group whose list has
+// not been fetched yet blocks the state (its commands are unseen, so
+// nothing can be stopping them); a fetched-but-empty list passes vacuously
+// — there is genuinely nothing to stop for that conversation.
+export function everyJobStopping(groups: readonly BackgroundJobsGroup[]): boolean {
+  const live = groups.flatMap((group) => group.jobs ?? []);
+  return (
+    live.length > 0 &&
+    groups.every(
+      (group) => group.jobs !== null && group.jobs.every((job) => group.killing.has(job.job_id)),
+    )
+  );
+}
 
 // The conversations whose running commands belong to the open
 // conversation's strip: itself plus every descendant reporting running
@@ -41,7 +59,11 @@ function pollTargets(
 
 export function useBackgroundJobs(
   conversationId: Ref<string | null>,
-  conversations: Ref<ConversationWithState[]>,
+  // The conversation list, as App provides it. Contract: the ref's array
+  // must be REPLACED per update, never mutated in place (push/splice) —
+  // the watcher diffs per list version, so an in-place mutation silently
+  // freezes the poll set.
+  conversations: Ref<readonly ConversationWithState[]>,
 ) {
   // Live commands grouped per polled conversation. Replaced immutably on
   // every change so readers key off one identity per list version.
@@ -63,7 +85,9 @@ export function useBackgroundJobs(
 
   // One conversation's poll loop: fetch, publish, reschedule — until
   // stopped. A failed fetch surfaces on the conversation's own group and
-  // the loop continues (the polled list keeps the strip truthful).
+  // the loop continues (the polled list keeps the strip truthful). Bare
+  // setTimeout/clearTimeout, not window.*: node's test runner mocks the
+  // global timer (and window does not exist there).
   function startPoller(id: string): () => void {
     let disposed = false;
     let poll: ReturnType<typeof setTimeout> | undefined;
@@ -89,9 +113,10 @@ export function useBackgroundJobs(
         });
       } catch (e) {
         if (!disposed) {
+          const message = e instanceof Error ? e.message : String(e);
           const current = jobsByConversation.value.get(id);
-          if (current) setGroup(id, { ...current, error: e instanceof Error ? e.message : String(e) });
-          else setGroup(id, { jobs: null, error: e instanceof Error ? e.message : String(e), killing: new Set() });
+          if (current) setGroup(id, { ...current, error: message });
+          else setGroup(id, { jobs: null, error: message, killing: new Set() });
         }
       } finally {
         if (!disposed) poll = setTimeout(() => void refresh(), POLL_MS);
@@ -108,7 +133,7 @@ export function useBackgroundJobs(
   // conversation's poller: a fresh poller fetches immediately, so the
   // group's command list tracks the header's count within one round trip
   // (the strip's stop-all must cover exactly what the header counts)
-  // instead of at the next 3s tick.
+  // instead of at the next poll tick.
   const lastCounts = new Map<string, number>();
   watch(
     [conversationId, conversations],
@@ -142,26 +167,28 @@ export function useBackgroundJobs(
     [...jobsByConversation.value.values()].flatMap((group) => group.jobs ?? []),
   );
 
-  async function stop(id: string, jobId: string) {
-    const group = jobsByConversation.value.get(id);
-    // The stop button only renders for a polled command, so the group is
-    // virtually always there; if it vanished mid-click the command is done
-    // either way.
-    if (!group) return;
-    setGroup(id, { ...group, killing: new Set(group.killing).add(jobId) });
+  // Stop one of conversationId's polled commands. Returns false when the
+  // conversation's group is already gone — a quiet no-op: the stop button
+  // only renders for a polled command, so a false return means the command
+  // finished inside the click's race window (the command is done either
+  // way). Returns true once the stop was sent, including when the group
+  // vanishes before the response lands; an API failure surfaces on the
+  // group's error.
+  async function stop(conversationId: string, jobId: string): Promise<boolean> {
+    const group = jobsByConversation.value.get(conversationId);
+    if (!group) return false;
+    setGroup(conversationId, { ...group, killing: new Set(group.killing).add(jobId) });
     try {
-      await api.killBackgroundJob(id, jobId);
+      await api.killBackgroundJob(conversationId, jobId);
     } catch (e) {
-      const current = jobsByConversation.value.get(id);
-      if (!current) return;
+      const message = e instanceof Error ? e.message : String(e);
+      const current = jobsByConversation.value.get(conversationId);
+      if (!current) return true;
       const next = new Set(current.killing);
       next.delete(jobId);
-      setGroup(id, {
-        ...current,
-        error: e instanceof Error ? e.message : String(e),
-        killing: next,
-      });
+      setGroup(conversationId, { ...current, error: message, killing: next });
     }
+    return true;
   }
 
   return { jobsByConversation, jobs, stop };
