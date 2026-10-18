@@ -20,21 +20,40 @@ export interface ListedConversation {
   total_cost_usd?: number | null;
 }
 
-// Sibling order everywhere in the tree: by created_at, then id for ties.
+// Sibling order everywhere in the tree: by created_at instant, then id for
+// ties. Both keys compare deterministically across machines — epoch millis
+// for timestamps, codepoint order for ids (localeCompare's collation is
+// host-locale-dependent; ids are ULIDs, so codepoint order is creation
+// order — the same approach as utils/conversationSort.ts).
+function createdAtMs(c: ListedConversation): number {
+  // created_at is ISO-8601 from the server; an unparseable value is a bug —
+  // crash rather than silently mis-order the tree.
+  const t = new Date(c.created_at).getTime();
+  if (!Number.isFinite(t)) throw new Error(`invalid created_at: ${c.created_at}`);
+  return t;
+}
+
 function byCreatedThenId<T extends ListedConversation>(a: T, b: T): number {
-  return (
-    a.created_at.localeCompare(b.created_at) ||
-    a.conversation_id.localeCompare(b.conversation_id)
-  );
+  const byTime = createdAtMs(a) - createdAtMs(b);
+  if (byTime !== 0) return byTime;
+  if (a.conversation_id === b.conversation_id) return 0;
+  return a.conversation_id < b.conversation_id ? -1 : 1;
 }
 
 // Children grouped by parent id, each sibling list in tree order. The map
-// holds only entries that have children in the given list.
+// holds only entries that have children in the given list. Duplicate ids in
+// the list resolve last-wins — the same rule ancestorChain's id map applies
+// — so a duplicated conversation is attributed to one parent only.
 export function childrenByParent<T extends ListedConversation>(
   convs: readonly T[],
 ): Map<string, T[]> {
   const out = new Map<string, T[]>();
-  for (const c of convs) {
+  const seen = new Set<string>();
+  for (let i = convs.length - 1; i >= 0; i--) {
+    const c = convs[i];
+    createdAtMs(c); // every listed conversation must carry a parseable created_at
+    if (seen.has(c.conversation_id)) continue;
+    seen.add(c.conversation_id);
     const parent = c.parent_conversation_id;
     if (!parent) continue;
     const kids = out.get(parent);
@@ -46,14 +65,19 @@ export function childrenByParent<T extends ListedConversation>(
 }
 
 // Every descendant of `id` at any depth, in tree order (each child directly
-// after its parent, created_at ordering within siblings).
+// after its parent, created_at ordering within siblings). The seen set is a
+// cycle guard (matching ancestorChain): a corrupt list that makes a
+// conversation its own descendant terminates instead of overflowing.
 function descendantsOf<T extends ListedConversation>(
   id: string,
   byParent: Map<string, T[]>,
 ): T[] {
   const out: T[] = [];
+  const seen = new Set<string>([id]);
   const walk = (parentId: string): void => {
     for (const kid of byParent.get(parentId) ?? []) {
+      if (seen.has(kid.conversation_id)) continue;
+      seen.add(kid.conversation_id);
       out.push(kid);
       walk(kid.conversation_id);
     }
@@ -135,7 +159,10 @@ export function costReadout<T extends ListedConversation>(
 
 // The conversation's ancestor chain: itself first, then each parent, up to
 // the top-level root. A parent missing from the list (outside the list
-// window) ends the walk — the chain returns what exists.
+// window) ends the walk, and the seen set stops a corrupt parent cycle (a
+// conversation its own ancestor) instead of spinning. Duplicate ids in the
+// list resolve last-wins via the id map — matching childrenByParent's
+// dedupe.
 export function ancestorChain<T extends ListedConversation>(
   conv: T,
   convs: readonly T[],
@@ -196,13 +223,17 @@ export function stripRows<T extends ListedConversation>(
   const isShown = (c: T): boolean => c.working || retainedIds.has(c.conversation_id);
 
   // Post-order pass: which subtrees hold a shown row, and which hold a
-  // working row (strictly below their root).
+  // working row (strictly below their root). Cycle-guarded like
+  // descendantsOf — a corrupt list terminates the walk.
   const subtreeShown = new Map<string, boolean>();
   const subtreeWorking = new Map<string, boolean>();
+  const walked = new Set<string>();
   const walk = (id: string): { shown: boolean; working: boolean } => {
     let shown = false;
     let working = false;
     for (const kid of byParent.get(id) ?? []) {
+      if (walked.has(kid.conversation_id)) continue;
+      walked.add(kid.conversation_id);
       const below = walk(kid.conversation_id);
       if (isShown(kid) || below.shown) shown = true;
       if (kid.working || below.working) working = true;
@@ -215,9 +246,12 @@ export function stripRows<T extends ListedConversation>(
 
   // Pre-order pass: emit shown rows and scaffolding ancestors.
   const rows: StripRow<T>[] = [];
+  const emitted = new Set<string>();
   const emit = (id: string, depth: number): void => {
     for (const kid of byParent.get(id) ?? []) {
       const kidId = kid.conversation_id;
+      if (emitted.has(kidId)) continue;
+      emitted.add(kidId);
       if (!isShown(kid) && !subtreeShown.get(kidId)) continue;
       const state: StripRowState = kid.working
         ? "running"
