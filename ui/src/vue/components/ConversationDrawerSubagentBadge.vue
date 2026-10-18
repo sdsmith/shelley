@@ -1,12 +1,14 @@
-<!-- The "subagents" badge on a drawer row: the count pair (N direct children
-     running / M direct children launched), the (ΣZ) suffix when the tree
-     extends past the direct children, the working ring (lit while ANY
-     descendant at any depth works — distinct from the row's own ring, which
-     means "this agent's turn is open"), and the expand/collapse chevron.
-     Renders nothing for entries without subagents. Numbers come from the
-     conversationTree module; collapse semantics (whole subtree, per-entry
-     persistence) live in the shared expanded set. Used by top-level rows
-     and, recursively, by nested subagent rows. -->
+<!-- The "subagents" badge on a drawer row: the count pair, the (ΣZ) suffix
+     when the tree extends past the direct children, the working ring (lit
+     while ANY descendant at any depth works — distinct from the row's own
+     ring, which means "this agent's turn is open"), and the expand/collapse
+     chevron. Numbers and rendering flags come from the conversationTree
+     module's subagentBadge (its doc is the contract for what renders);
+     collapse semantics (whole subtree, per-entry persistence) live in the
+     shared expanded set. Renders nothing for entries without subagents.
+     Callers must not render this for draft or archived entries — those
+     gates live at the call sites (subrows can never be either). Used by
+     top-level rows and, recursively, by nested subagent rows. -->
 <template>
   <button
     v-if="hasChildren"
@@ -43,7 +45,7 @@
 import { computed, inject } from "vue";
 import type { ConversationWithState } from "../../types";
 import { DrawerCtxKey } from "./conversationDrawerShared";
-import { anyDescendantWorking, costReadout, subagentBadge } from "./conversationTree";
+import { anyDescendantWorking, subagentBadge } from "./conversationTree";
 
 const props = defineProps<{
   conversation: ConversationWithState;
@@ -51,19 +53,19 @@ const props = defineProps<{
 
 const ctx = inject(DrawerCtxKey)!;
 
-const badge = computed(() => subagentBadge(props.conversation, ctx.treeConversations.value));
-const hasChildren = computed(
-  () => costReadout(props.conversation, ctx.treeConversations.value).hasChildren,
+const badge = computed(() =>
+  subagentBadge(props.conversation, ctx.dayFilteredConversations.value),
 );
+const hasChildren = computed(() => badge.value.launched > 0);
 
 const descendantWorking = computed(() =>
-  anyDescendantWorking(props.conversation, ctx.treeConversations.value),
+  anyDescendantWorking(props.conversation, ctx.dayFilteredConversations.value),
 );
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
 );
-// The N/M pair hides when N = 0 (even while a deeper descendant runs — the
-// ring carries that signal); the (ΣZ) suffix renders only when Z > M.
+// Flags from subagentBadge drive the pair and the Σ suffix (its doc is the
+// rendering contract).
 const label = computed(() => {
   const b = badge.value;
   const pair = b.showRunningPair ? `${b.running}/` : "";

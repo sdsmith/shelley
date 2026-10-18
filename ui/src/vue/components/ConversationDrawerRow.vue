@@ -204,16 +204,17 @@
 
       <div class="conversation-meta">
         <span class="conversation-date">{{ ctx.formatDate(conversation.updated_at) }}</span>
-        <!-- Session price: own spend, or main/total when the session has
-             subagents. The separating slash is dimmed so each price reads
-             on its own. Hidden while there is no usage to price. -->
-        <span v-if="costParts" class="conversation-cost" :title="costTitle"
-          >{{ costParts.main }}<span
-            v-if="costParts.total"
+        <!-- Session price, next to the date: own spend, or main/total when
+             the session has subagents. The separating slash is dimmed so
+             each price reads on its own. Hidden while there is no usage to
+             price. -->
+        <span v-if="cost" class="conversation-cost" :title="costTitle"
+          >{{ cost.main }}<span
+            v-if="cost.total"
             class="conversation-cost-slash"
             aria-hidden="true"
             >/</span
-          >{{ costParts.total ?? "" }}</span
+          >{{ cost.total ?? "" }}</span
         >
         <span
           v-if="conversation.cwd && ctx.groupBy.value !== 'cwd'"
@@ -401,15 +402,14 @@ import { isImeComposing } from "../../utils/imeComposing";
 import { highlightSearchMatches } from "../../utils/searchHighlight";
 import {
   DrawerCtxKey,
+  costParts,
   parseTags,
   stripSnippetMarks,
   renderSnippetSegments,
 } from "./conversationDrawerShared";
 import ConversationDrawerSubrow from "./ConversationDrawerSubrow.vue";
 import ConversationDrawerSubagentBadge from "./ConversationDrawerSubagentBadge.vue";
-import { costReadout } from "./conversationTree";
 import { isTagSelected } from "../../utils/tagFilter";
-import { formatUsd } from "../../utils/tokenCostGraph";
 import { perfCount } from "../../utils/perf";
 import GearIcon from "./GearIcon.vue";
 
@@ -519,23 +519,15 @@ const conversationSubagents = computed<ConversationWithState[]>(() =>
 );
 // Session price shown next to the date. With subagents the row reads
 // main/total (no labels — the tooltip spells them out); without, just the
-// session's own spend. Hidden while there is nothing to price. The
-// has-children flag and the numbers come from the conversationTree module.
-const costParts = computed(() => {
-  if (isDraft.value) return null;
-  const { ownCost, totalCost, hasChildren } = costReadout(
-    convState.value,
-    ctx.treeConversations.value,
-  );
-  if (totalCost <= 0) return null;
-  if (hasChildren && totalCost > ownCost)
-    return { main: formatUsd(ownCost), total: formatUsd(totalCost) };
-  return { main: formatUsd(totalCost) };
-});
+// session's own spend. Hidden while there is nothing to price. The rule is
+// the shared costParts helper; drafts have nothing to price.
+const cost = computed(() =>
+  isDraft.value ? null : costParts(convState.value, ctx.dayFilteredConversations.value),
+);
 const costTitle = computed(() => {
-  if (!costParts.value) return "";
-  return costParts.value.total
-    ? `Estimated spend — main ${costParts.value.main}, ${costParts.value.total} with subagents`
+  if (!cost.value) return "";
+  return cost.value.total
+    ? `Estimated spend — main ${cost.value.main}, ${cost.value.total} with subagents`
     : "Estimated session cost";
 });
 // Live terminals pinned to this conversation. Badged only when > 1.
@@ -819,37 +811,3 @@ const DeleteButton = defineComponent({
   },
 });
 </script>
-
-<style scoped>
-.conversation-running-work {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  margin-left: auto;
-  padding: 0 0.25rem;
-  border-radius: 0.25rem;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  font-size: var(--font-size-12);
-  line-height: 1.4;
-  white-space: nowrap;
-}
-
-.conversation-running-work-gear {
-  width: 9px;
-  height: 9px;
-  flex-shrink: 0;
-}
-
-.conversation-terminal-count + .conversation-running-work,
-.conversation-running-work + .conversation-participant-badge,
-.conversation-running-work + .subagent-count-badge {
-  margin-left: 0;
-}
-
-.conversation-item.active .conversation-running-work {
-  background: rgba(255, 255, 255, 0.15);
-  color: white;
-}
-</style>

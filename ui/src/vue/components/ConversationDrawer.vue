@@ -940,11 +940,17 @@ watch(
   },
 );
 
-// The flat list the tree math reads: day-filtered, the same pool
-// subagentsByParent buckets, so badge numbers and rendered rows agree.
-const treeConversations = computed(() =>
-  filterConversationsByDay(props.conversations, selectedDay.value),
-);
+// The flat list the tree math reads: day-filtered, deduplicated last-wins
+// (the module's contract for a repeated conversation id), and the exact pool
+// subagentsByParent buckets — badge numbers and rendered rows read one list.
+const dayFilteredConversations = computed(() => {
+  const byId = new Map(
+    filterConversationsByDay(props.conversations, selectedDay.value).map(
+      (c) => [c.conversation_id, c],
+    ),
+  );
+  return [...byId.values()];
+});
 
 // Bucket subagents under their parent.
 const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() => {
@@ -952,7 +958,7 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
   resetOrderRefsForResort();
   void resortKey.value;
   const out: Record<string, ConversationWithState[]> = {};
-  for (const conv of treeConversations.value) {
+  for (const conv of dayFilteredConversations.value) {
     if (conv.parent_conversation_id) {
       (out[conv.parent_conversation_id] ||= []).push(conv);
     }
@@ -969,19 +975,22 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
 });
 
 // Track which ids exist so newly-added rows animate in. enteringIds is the
-// ids the list gained since its previous state (null on the first seed, so
-// the initial mount never animates); rows read it for their enter class. It
-// must be computed in the watcher — reading the post-update seen set in a
-// row's render can never see a row as new, because this watcher runs before
-// any row re-renders.
+// ids the ACTIVE list gained since its previous state (null on the first
+// seed, so the initial mount never animates); rows read it for their enter
+// class. It must be computed in the watcher — reading the post-update seen
+// set in a row's render can never see a row as new, because this watcher
+// runs before any row re-renders. The seen set also records archived ids,
+// but they never enter: the archived view's first fetch bulk-loads the list
+// (a bulk load is neither the initial mount nor a new row), and unarchiving
+// moves an already-seen id back to active.
 const enteringIds = ref<Set<string> | null>(null);
 watch(
   [() => props.conversations, archivedConversations],
   () => {
-    const ids = new Set<string>();
-    for (const c of props.conversations) ids.add(c.conversation_id);
-    for (const c of archivedConversations.value) ids.add(c.conversation_id);
+    const activeIds = new Set(props.conversations.map((c) => c.conversation_id));
     const prev = seenIds.value;
+    const ids = new Set(activeIds);
+    for (const c of archivedConversations.value) ids.add(c.conversation_id);
     if (prev && prev.size === ids.size) {
       let same = true;
       for (const id of ids) {
@@ -992,18 +1001,25 @@ watch(
       }
       if (same) return;
     }
-    enteringIds.value = prev ? new Set([...ids].filter((id) => !prev.has(id))) : null;
+    enteringIds.value = prev
+      ? new Set([...activeIds].filter((id) => !prev.has(id)))
+      : null;
     seenIds.value = ids;
   },
   { immediate: true },
 );
 
 // Auto-expand the full ancestor chain when viewing a subagent, so the
-// conversation being opened is visible at any depth. Resolving the chain
-// from the list also means a spawn never auto-expands anything: only
-// navigation to a conversation does. When the viewed conversation is not in
-// the list (outside the list window), today's single hop to its direct
-// parent is kept.
+// conversation being opened is visible at any depth. The watcher only ever
+// adds ancestors of the conversation the user navigated to — a spawn changes
+// no one's ancestry, so it never expands anything. The list is watched so
+// the chain can be resolved from it (the viewed conversation may be set
+// before the list loads); once a navigation has been served, later triggers
+// do nothing, so collapsing an ancestor while it stays viewed sticks.
+// When the viewed conversation is not in the list (outside the list window)
+// the chain cannot be resolved and the pre-existing single hop — expanding
+// just its direct parent — is kept, retried until the list has it.
+let autoExpandedFor: string | null = null;
 watch(
   [() => props.viewedConversation, () => props.conversations, showArchived],
   () => {
@@ -1012,14 +1028,19 @@ watch(
     const inList = props.conversations.find(
       (c) => c.conversation_id === viewed.conversation_id,
     );
-    const ancestorIds = inList
-      ? ancestorChain(inList, props.conversations)
-          .slice(1)
-          .map((a) => a.conversation_id)
-      : viewed.parent_conversation_id
-        ? [viewed.parent_conversation_id]
-        : [];
-    if (ancestorIds.every((id) => expandedSubagents.value.has(id))) return;
+    if (!inList) {
+      const parentId = viewed.parent_conversation_id;
+      if (parentId && !expandedSubagents.value.has(parentId)) {
+        expandedSubagents.value = new Set([...expandedSubagents.value, parentId]);
+      }
+      return;
+    }
+    if (autoExpandedFor === viewed.conversation_id) return;
+    autoExpandedFor = viewed.conversation_id;
+    const ancestorIds = ancestorChain(inList, props.conversations)
+      .slice(1)
+      .map((a) => a.conversation_id);
+    if (ancestorIds.length === 0) return;
     expandedSubagents.value = new Set([...expandedSubagents.value, ...ancestorIds]);
   },
   { immediate: true },
@@ -1864,7 +1885,7 @@ provide(DrawerCtxKey, {
     return counts;
   }),
   subagentsByParent,
-  treeConversations,
+  dayFilteredConversations,
   expandedSubagents,
   enteringIds,
   copiedConvId,

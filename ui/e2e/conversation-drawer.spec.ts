@@ -125,6 +125,8 @@ test.describe("conversation drawer startup and app bar", () => {
     const runningRow = page.locator('[data-conversation-id="running"]');
     await expect(runningRow.locator(".drawer-working-indicator")).toBeVisible();
     await expect(runningRow.locator(".drawer-interrupted-indicator")).toHaveCount(0);
+    // The first seed never animates: rows land without the enter class.
+    await expect(runningRow).not.toHaveClass(/conversation-item-enter/);
   });
 
   test("shows a running-task gear count that opens the conversation", async ({ page }) => {
@@ -763,7 +765,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await page.goto("/new");
     await expect(page.locator('[data-conversation-id="parent"]')).toBeVisible();
     await page.getByRole("button", { name: "Expand subagents" }).click();
-    const subagentRow = page.locator(".subagent-item").filter({ hasText: "subagent" });
+    const subagentRow = page.locator('[data-conversation-id="subagent"]');
     await expect(subagentRow).toBeVisible();
 
     await page.getByRole("button", { name: "Search conversations..." }).click();
@@ -1207,15 +1209,20 @@ async function swipePatchDiff(page: Page) {
 }
 
 test.describe("drawer spawn tree", () => {
-  // trunk → limb → twig: the depth-2 tree the recursion specs walk. Slugs
-  // double as row titles and are chosen not to substring-collide.
+  // trunk → limb → twig → burl: the four-generation tree the recursion
+  // specs walk. The fixture is not bound by the server's nesting cap (the
+  // stub ships what it is given); the fourth generation pins that the
+  // rendering is depth-agnostic. Rows are targeted by their
+  // data-conversation-id, so names cannot collide.
   function spawnTree() {
     const trunk = conversation("trunk");
     const limb = conversation("limb");
     limb.parent_conversation_id = trunk.conversation_id;
     const twig = conversation("twig");
     twig.parent_conversation_id = limb.conversation_id;
-    return [trunk, limb, twig];
+    const burl = conversation("burl");
+    burl.parent_conversation_id = twig.conversation_id;
+    return [trunk, limb, twig, burl];
   }
 
   async function expandRow(row: Locator) {
@@ -1227,19 +1234,23 @@ test.describe("drawer spawn tree", () => {
 
     await page.goto("/new");
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
-    const limbRow = page.locator(".subagent-item").filter({ hasText: "limb" });
-    await expect(limbRow).toBeVisible();
-    await expandRow(limbRow);
-    const twigRow = page.locator(".subagent-item").filter({ hasText: "twig" });
-    await expect(twigRow).toBeVisible();
+    await expandRow(page.locator('[data-conversation-id="limb"]'));
+    await expandRow(page.locator('[data-conversation-id="twig"]'));
+    for (const id of ["limb", "twig", "burl"]) {
+      await expect(page.locator(`[data-conversation-id="${id}"]`)).toBeVisible();
+    }
 
-    const trunkX = (await page.locator('[data-conversation-id="trunk"]').boundingBox())!.x;
-    const limbX = (await limbRow.boundingBox())!.x;
-    const twigX = (await twigRow.boundingBox())!.x;
-    // Each level indents one step past its parent, and the steps match.
-    expect(limbX - trunkX).toBeGreaterThanOrEqual(20);
-    expect(twigX - limbX).toBeGreaterThanOrEqual(20);
-    expect(Math.abs(limbX - trunkX - (twigX - limbX))).toBeLessThan(2);
+    const xs = await Promise.all(
+      ["trunk", "limb", "twig", "burl"].map(
+        async (id) => (await page.locator(`[data-conversation-id="${id}"]`).boundingBox())!.x,
+      ),
+    );
+    // Each level indents one step past its parent, and every step matches —
+    // at any depth, with no per-level special-casing.
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(20);
+      expect(Math.abs(xs[i] - xs[i - 1] - (xs[1] - xs[0]))).toBeLessThan(2);
+    }
   });
 
   test("nested spawning entries show the tree-aware badge; childless entries none", async ({
@@ -1255,15 +1266,14 @@ test.describe("drawer spawn tree", () => {
 
     await page.goto("/new");
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
-    const limbRow = page.locator(".subagent-item").filter({ hasText: "limb" });
-    const limbBadge = limbRow.locator(".subagent-count-badge");
+    const limbBadge = page.locator('[data-conversation-id="limb"] .subagent-count-badge');
     await expect(limbBadge).toHaveText("1/2");
     await expect(limbBadge.getByTestId("subagent-badge-running")).toBeVisible();
 
-    await expandRow(limbRow);
+    await expandRow(page.locator('[data-conversation-id="limb"]'));
     for (const twig of ["twig-a", "twig-b"]) {
       await expect(
-        page.locator(".subagent-item").filter({ hasText: twig }).locator(".subagent-count-badge"),
+        page.locator(`[data-conversation-id="${twig}"] .subagent-count-badge`),
       ).toHaveCount(0);
     }
   });
@@ -1292,41 +1302,40 @@ test.describe("drawer spawn tree", () => {
 
     await page.goto("/new");
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
+    // formatUsd pads sub-dollar amounts to three decimals, so 0.42 renders
+    // as "$0.420" while 1.47 renders as "$1.47".
     await expect(
       page.locator('[data-conversation-id="trunk"] .conversation-cost'),
     ).toHaveText("$0.420/$1.47");
     await expect(
-      page.locator(".subagent-item").filter({ hasText: "limb" }).locator(".conversation-cost"),
+      page.locator('[data-conversation-id="limb"] .conversation-cost'),
     ).toHaveText("$0.310/$0.680");
 
-    await expandRow(page.locator(".subagent-item").filter({ hasText: "limb" }));
+    await expandRow(page.locator('[data-conversation-id="limb"]'));
     await expect(
-      page.locator(".subagent-item").filter({ hasText: "twig" }).locator(".conversation-cost"),
+      page.locator('[data-conversation-id="twig"] .conversation-cost'),
     ).toHaveText("$0.370");
     await expect(
-      page.locator(".subagent-item").filter({ hasText: "branch" }).locator(".conversation-cost"),
+      page.locator('[data-conversation-id="branch"] .conversation-cost'),
     ).toHaveText("$0.500");
   });
 
-  test("the badge suffix reports the whole tree: M (ΣZ) idle, N/M (ΣZ) running", async ({
+  test("the badge suffix reports the whole tree: M (ΣZ) idle, N/M (ΣZ) running, nested too", async ({
     page,
   }) => {
-    const [trunk, limb] = spawnTree();
+    const [trunk, limb, twig, burl] = spawnTree();
     limb.working = true;
-    const twigA = conversation("twig-a");
-    twigA.parent_conversation_id = limb.conversation_id;
-    const twigB = conversation("twig-b");
-    twigB.parent_conversation_id = limb.conversation_id;
     // Idle twin tree for the M-only-with-suffix case.
     const trunk2 = conversation("trunk-two");
     const limb2 = conversation("limb-two");
     limb2.parent_conversation_id = trunk2.conversation_id;
     const twig2 = conversation("twig-two");
     twig2.parent_conversation_id = limb2.conversation_id;
-    await stubConversationList(page, [trunk, limb, twigA, twigB, trunk2, limb2, twig2]);
+    await stubConversationList(page, [trunk, limb, twig, burl, trunk2, limb2, twig2]);
 
     await page.goto("/new");
-    // limb works: trunk's pair shows 1 running of 1 launched, Σ3 total.
+    // limb works: trunk's pair shows 1 running of 1 launched, Σ3 total
+    // (limb, twig, burl).
     await expect(
       page.locator('[data-conversation-id="trunk"] .subagent-count-badge'),
     ).toHaveText("1/1 (Σ3)");
@@ -1334,6 +1343,16 @@ test.describe("drawer spawn tree", () => {
     await expect(
       page.locator('[data-conversation-id="trunk-two"] .subagent-count-badge'),
     ).toHaveText("1 (Σ2)");
+
+    // The suffix also fires on a nested entry whose tree extends past its
+    // direct children: limb's descendants (twig, burl) outnumber its one
+    // child. Its pair hides at N=0 (twig idles), and the badge ring stays
+    // dark — the ring means a DESCENDANT works, and limb's own working
+    // must not light it.
+    await expandRow(page.locator('[data-conversation-id="trunk"]'));
+    const limbBadge = page.locator('[data-conversation-id="limb"] .subagent-count-badge');
+    await expect(limbBadge).toHaveText("1 (Σ2)");
+    await expect(limbBadge.getByTestId("subagent-badge-running")).toHaveCount(0);
   });
 
   test("hiding subagents on any entry hides its whole subtree, and each entry's own expansion persists", async ({
@@ -1344,23 +1363,26 @@ test.describe("drawer spawn tree", () => {
     await page.goto("/new");
     const trunkRow = page.locator('[data-conversation-id="trunk"]');
     await expandRow(trunkRow);
-    const limbRow = page.locator(".subagent-item").filter({ hasText: "limb" });
+    const limbRow = page.locator('[data-conversation-id="limb"]');
     await expandRow(limbRow);
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toBeVisible();
+    await expandRow(page.locator('[data-conversation-id="twig"]'));
+    await expect(page.locator('[data-conversation-id="burl"]')).toBeVisible();
 
     // Collapsing the top-level entry hides the entire nested subtree.
     await trunkRow.getByRole("button", { name: "Collapse subagents" }).click();
     await expect(limbRow).toHaveCount(0);
 
-    // Re-expanding restores it — with limb's own expansion remembered.
+    // Re-expanding restores it — with limb's and twig's own expansions
+    // remembered, all the way down to the fourth generation.
     await expandRow(trunkRow);
     await expect(limbRow).toBeVisible();
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toBeVisible();
+    await expect(page.locator('[data-conversation-id="twig"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="burl"]')).toBeVisible();
 
     // Collapsing the nested entry hides only its own subtree.
     await limbRow.getByRole("button", { name: "Collapse subagents" }).click();
     await expect(limbRow).toBeVisible();
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="twig"]')).toHaveCount(0);
   });
 
   test("navigating to a depth-2 conversation auto-expands its whole ancestor chain", async ({
@@ -1369,13 +1391,85 @@ test.describe("drawer spawn tree", () => {
     await stubConversationList(page, spawnTree());
 
     await page.goto("/c/twig");
-    const trunkRow = page.locator('[data-conversation-id="trunk"]');
-    await expect(trunkRow.locator(".subagent-count-badge")).toBeVisible();
-    const limbRow = page.locator(".subagent-item").filter({ hasText: "limb" });
-    await expect(limbRow).toBeVisible();
-    // No further clicks: the chain expanded itself down to the viewed row.
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toBeVisible();
-    await expect(page.locator(".subagent-item.active")).toHaveText(/twig/);
+    await expect(page.locator('[data-conversation-id="trunk"] .subagent-count-badge')).toBeVisible();
+    // No clicks on limb's badge: the chain expanded itself down to the
+    // viewed row.
+    await expect(page.locator('[data-conversation-id="limb"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="twig"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="twig"].active')).toBeVisible();
+  });
+
+  test("collapsing an ancestor stays collapsed while the viewed conversation ticks", async ({
+    page,
+  }) => {
+    const [trunk, limb, twig] = spawnTree();
+    await stubConversationList(page, [trunk, limb, twig]);
+    // The next list update arrives as a conversation-list patch on the
+    // stream once the test releases it — the day-filter spec's way of
+    // driving list updates without sleeping.
+    const ticked = [trunk, { ...limb, preview: "ticked" }, { ...twig, preview: "ticked" }];
+    let releaseStream!: () => void;
+    const streamReleased = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    await page.route("**/api/stream2*", async (route) => {
+      await streamReleased;
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `data: ${JSON.stringify({
+          conversation_list_patch: {
+            reset: true,
+            new_hash: "ticked",
+            at: "2026-10-08T16:00:00Z",
+            patch: [{ op: "replace", path: "", value: ticked }],
+          },
+        })}\n\n`,
+      });
+    });
+
+    await page.goto("/c/twig");
+    await expect(page.locator('[data-conversation-id="twig"]')).toBeVisible();
+
+    // The user collapses an ancestor while the depth-2 conversation stays
+    // viewed.
+    await page
+      .locator('[data-conversation-id="limb"]')
+      .getByRole("button", { name: "Collapse subagents" })
+      .click();
+    await expect(page.locator('[data-conversation-id="twig"]')).toHaveCount(0);
+
+    // A list patch (any conversation's update) must not re-expand it.
+    releaseStream();
+    await expect(page.locator('[data-conversation-id="limb"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="twig"]')).toHaveCount(0);
+  });
+
+  test("a viewed conversation outside the list window auto-expands its direct parent", async ({
+    page,
+  }) => {
+    const [trunk, limb] = spawnTree();
+    const sibling = conversation("twig-sib");
+    sibling.parent_conversation_id = limb.conversation_id;
+    await stubConversationList(page, [trunk, limb, sibling]);
+    const twig = conversation("twig");
+    twig.parent_conversation_id = limb.conversation_id;
+    await page.route("**/api/conversation-by-slug/twig", (route) =>
+      route.fulfill({ json: twig }),
+    );
+
+    await page.goto("/c/twig");
+    // twig is outside the list window, so the chain cannot be resolved and
+    // the fallback expands just the direct parent. Expanding trunk reveals
+    // limb already expanded — no second click.
+    await page
+      .locator('[data-conversation-id="trunk"]')
+      .getByRole("button", { name: "Expand subagents" })
+      .click();
+    await expect(
+      page
+        .locator('[data-conversation-id="limb"]')
+        .getByRole("button", { name: "Collapse subagents" }),
+    ).toBeVisible();
   });
 
   test("tag filters and searches keep revealing nested rows under their parent", async ({
@@ -1390,16 +1484,15 @@ test.describe("drawer spawn tree", () => {
     await page.getByRole("button", { name: "Add tag filter" }).click();
     await page.getByTestId("tag-filter-panel").locator('[data-tag="keep"]').click();
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
-    const limbRow = page.locator(".subagent-item").filter({ hasText: "limb" });
-    await expect(limbRow).toBeVisible();
-    await expandRow(limbRow);
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toBeVisible();
+    await expect(page.locator('[data-conversation-id="limb"]')).toBeVisible();
+    await expandRow(page.locator('[data-conversation-id="limb"]'));
+    await expect(page.locator('[data-conversation-id="twig"]')).toBeVisible();
 
     // A text search (FTS stubbed to top-level hits, like the server) reveals
     // the same nested rows under the matching parent.
     await queryEditor(page).fill("tag:keep trunk ");
-    await expect(page.locator(".subagent-item").filter({ hasText: "limb" })).toBeVisible();
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig" })).toBeVisible();
+    await expect(page.locator('[data-conversation-id="limb"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="twig"]')).toBeVisible();
   });
 
   test("new nested rows animate in on spawn, and a spawn never auto-expands", async ({
@@ -1415,7 +1508,7 @@ test.describe("drawer spawn tree", () => {
     await stubConversationList(page, [trunk, limbA, oldTwig, limbB]);
 
     // The next list update arrives as a conversation-list patch on the
-    // stream, held until the test releases it (the day-filter spec's way of
+    // stream once the test releases it (the day-filter spec's way of
     // driving list updates without sleeping).
     const newTwig = conversation("new-twig");
     newTwig.parent_conversation_id = limbA.conversation_id;
@@ -1448,18 +1541,24 @@ test.describe("drawer spawn tree", () => {
 
     await page.goto("/new");
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
-    await expandRow(page.locator(".subagent-item").filter({ hasText: "limb-a" }));
-    await expect(page.locator(".subagent-item").filter({ hasText: "old-twig" })).toBeVisible();
+    await expandRow(page.locator('[data-conversation-id="limb-a"]'));
+    await expect(page.locator('[data-conversation-id="old-twig"]')).toBeVisible();
 
     releaseStream();
-    const newTwigRow = page.locator(".subagent-item").filter({ hasText: "new-twig" });
+    const newTwigRow = page.locator('[data-conversation-id="new-twig"]');
     await expect(newTwigRow).toBeVisible();
-    // Animates in like today's new subagent rows.
+    // The spawned row animates in like the depth-1 rows do.
     await expect(newTwigRow).toHaveClass(/conversation-item-enter/);
+    // ...and only the spawned row: pre-existing rows never re-animate.
+    for (const id of ["trunk", "limb-a", "limb-b", "old-twig"]) {
+      await expect(page.locator(`[data-conversation-id="${id}"]`)).not.toHaveClass(
+        /conversation-item-enter/,
+      );
+    }
 
     // The spawn under the collapsed limb-b did not expand anything: its
     // twig stays hidden behind the collapsed parent.
-    await expect(page.locator(".subagent-item").filter({ hasText: "twig-b" })).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="twig-b"]')).toHaveCount(0);
   });
 
   test("the day filter keeps applying to nested rows", async ({ page }) => {
@@ -1479,12 +1578,8 @@ test.describe("drawer spawn tree", () => {
     await page.locator(".group-by-menu-item").filter({ hasText: /^Daily$/ }).click();
     await expandRow(page.locator('[data-conversation-id="trunk"]'));
 
-    await expect(
-      page.locator(".subagent-item").filter({ hasText: "limb-today" }),
-    ).toBeVisible();
-    await expect(
-      page.locator(".subagent-item").filter({ hasText: "limb-yesterday" }),
-    ).toHaveCount(0);
+    await expect(page.locator('[data-conversation-id="limb-today"]')).toBeVisible();
+    await expect(page.locator('[data-conversation-id="limb-yesterday"]')).toHaveCount(0);
   });
 });
 
