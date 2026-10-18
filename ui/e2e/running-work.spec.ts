@@ -18,12 +18,17 @@ async function stopWork(request: APIRequestContext, conversationIds: string[]) {
 
 async function waitForIdle(request: APIRequestContext, conversationId: string) {
   // Posts sent while a turn runs are queued and drain nondeterministically;
-  // wait the current turn out before sending the next one.
+  // wait the current turn out before sending the next one. The explicit
+  // budget covers a slow predictable turn under load — the 5s default has
+  // failed mid-setup.
   await expect
-    .poll(async () => {
-      const body = await (await request.get(`/api/conversation/${conversationId}`)).json();
-      return body.conversation.agent_working;
-    })
+    .poll(
+      async () => {
+        const body = await (await request.get(`/api/conversation/${conversationId}`)).json();
+        return body.conversation.agent_working;
+      },
+      { timeout: 30_000 },
+    )
     .toBe(false);
 }
 
@@ -31,8 +36,15 @@ async function waitForIdle(request: APIRequestContext, conversationId: string) {
 // middletask subagent whose own turn ends immediately, then two working
 // leaf grandchildren spawned FROM that middle. `prefix` keeps each test's
 // slugs unique on the shared test server (colliding slugs get renamed).
-// Returns the middle row.
-async function spawnDepth2Tree(request: APIRequestContext, conversationId: string, prefix: string) {
+// Returns the middle subagent (conversation record); `onMiddle` fires as
+// soon as the middle exists, so a caller can arm its cleanup before the
+// leaf spawns (a failure mid-spawn must not leak running leaves).
+async function spawnDepth2Tree(
+  request: APIRequestContext,
+  conversationId: string,
+  prefix: string,
+  onMiddle?: (id: string) => void,
+) {
   await waitForIdle(request, conversationId);
   expect(
     (
@@ -42,11 +54,21 @@ async function spawnDepth2Tree(request: APIRequestContext, conversationId: strin
     ).ok(),
   ).toBe(true);
   await waitForIdle(request, conversationId);
-  const middles = await (
-    await request.get(`/api/conversation/${conversationId}/subagents`)
-  ).json();
-  const middle = middles.find((s: { slug?: string }) => s.slug === `${prefix}middletask`);
-  expect(middle).toBeTruthy();
+  let middle: { conversation_id: string; slug: string } | undefined;
+  await expect
+    .poll(
+      async () => {
+        const middles = await (
+          await request.get(`/api/conversation/${conversationId}/subagents`)
+        ).json();
+        middle = middles.find((s: { slug?: string }) => s.slug === `${prefix}middletask`);
+        return middle?.conversation_id;
+      },
+      { timeout: 30_000 },
+    )
+    .toBeTruthy();
+  if (!middle) throw new Error(`${prefix}middletask not found`);
+  onMiddle?.(middle.conversation_id);
   await waitForIdle(request, middle.conversation_id);
   for (const name of ["leafone", "leaftwo"]) {
     expect(
@@ -224,8 +246,9 @@ test.describe("running work", () => {
     );
     let middleId = "";
     try {
-      const middle = await spawnDepth2Tree(request, conversationId, "");
-      middleId = middle.conversation_id;
+      await spawnDepth2Tree(request, conversationId, "top-", (id) => {
+        middleId = id;
+      });
 
       await page.goto(`/c/${slug}`);
       const strip = page.getByLabel("Running work", { exact: true });
@@ -244,6 +267,13 @@ test.describe("running work", () => {
       const middleRow = rows.filter({ hasText: "middletask" });
       const leafOne = rows.filter({ hasText: "leafone" });
       const leafTwo = rows.filter({ hasText: "leaftwo" });
+      // Tree order: the middle first, both leaves after it. Same-instant
+      // siblings tie-break on the (random) conversation id, so the leaves'
+      // relative order is not pinned — the module's strict ordering rule
+      // is pinned by its unit tests.
+      const slugs = await rows.locator("strong").allTextContents();
+      expect(slugs[0]).toBe("top-middletask");
+      expect(slugs.slice(1).sort()).toEqual(["top-leafone", "top-leaftwo"]);
       // The idle middle is a Waiting scaffolding row; the leaves run.
       await expect(middleRow.locator(".running-work-agent-time")).toHaveText("Waiting");
       await expect(leafOne.locator(".running-work-agent-time")).toContainText("Running");
@@ -280,8 +310,9 @@ test.describe("running work", () => {
     const { conversationId } = await createConversationViaAPIWithDetails(request, "hello there");
     let middleId = "";
     try {
-      const middle = await spawnDepth2Tree(request, conversationId, "sub-");
-      middleId = middle.conversation_id;
+      const middle = await spawnDepth2Tree(request, conversationId, "sub-", (id) => {
+        middleId = id;
+      });
 
       // The strip composes recursively: opening the middle conversation
       // shows ITS subtree — the two leaves — with no row for the middle
@@ -300,11 +331,22 @@ test.describe("running work", () => {
       // One leaf stops via the server: a single running item renders
       // headerless, and the finished leaf is retained beside it (the strip
       // was expanded).
-      const leaves = await (await request.get(`/api/conversation/${middleId}/subagents`)).json();
-      const leafTwo = leaves.find((s: { slug?: string }) => s.slug === "sub-leaftwo");
-      expect(
-        (await request.post(`/api/conversation/${leafTwo.conversation_id}/cancel`)).ok(),
-      ).toBe(true);
+      let leafTwoId = "";
+      await expect
+        .poll(
+          async () => {
+            const leaves = await (
+              await request.get(`/api/conversation/${middleId}/subagents`)
+            ).json();
+            leafTwoId =
+              leaves.find((s: { slug?: string }) => s.slug === "sub-leaftwo")?.conversation_id ??
+              "";
+            return leafTwoId;
+          },
+          { timeout: 30_000 },
+        )
+        .toBeTruthy();
+      expect((await request.post(`/api/conversation/${leafTwoId}/cancel`)).ok()).toBe(true);
       await expect(toggle).toHaveCount(0, { timeout: 15000 });
       await expect(rows).toHaveCount(2);
       await expect(
@@ -312,6 +354,64 @@ test.describe("running work", () => {
       ).toHaveText("Finished");
       await expect(
         rows.filter({ hasText: "leafone" }).locator(".running-work-agent-time"),
+      ).toContainText("Running");
+    } finally {
+      await stopWork(request, [conversationId, middleId].filter(Boolean));
+    }
+  });
+
+  test("a Waiting scaffold and a retained finished leaf keep one running row headerless", async ({
+    page,
+    request,
+  }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "hello there",
+    );
+    let middleId = "";
+    try {
+      await spawnDepth2Tree(request, conversationId, "solo-", (id) => {
+        middleId = id;
+      });
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      await expect(toggle).toContainText("2 subagents", { timeout: 30000 });
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(3);
+
+      // One leaf stops via the server: the single running item renders
+      // without the header — the Waiting middle scaffold and the retained
+      // finished leaf stay visible beside it (neither counts toward the
+      // headerless threshold).
+      let leafOneId = "";
+      await expect
+        .poll(
+          async () => {
+            const leaves = await (
+              await request.get(`/api/conversation/${middleId}/subagents`)
+            ).json();
+            leafOneId =
+              leaves.find((s: { slug?: string }) => s.slug === "solo-leafone")?.conversation_id ??
+              "";
+            return leafOneId;
+          },
+          { timeout: 30_000 },
+        )
+        .toBeTruthy();
+      expect((await request.post(`/api/conversation/${leafOneId}/cancel`)).ok()).toBe(true);
+      await expect(toggle).toHaveCount(0, { timeout: 15000 });
+      await expect(rows).toHaveCount(3);
+      await expect(
+        rows.filter({ hasText: "middletask" }).locator(".running-work-agent-time"),
+      ).toHaveText("Waiting");
+      await expect(
+        rows.filter({ hasText: "leafone" }).locator(".running-work-agent-time"),
+      ).toHaveText("Finished");
+      await expect(
+        rows.filter({ hasText: "leaftwo" }).locator(".running-work-agent-time"),
       ).toContainText("Running");
     } finally {
       await stopWork(request, [conversationId, middleId].filter(Boolean));
@@ -466,6 +566,72 @@ test.describe("running work", () => {
       await expect(toggle).toContainText("No running work", { timeout: 15000 });
       await toggle.click();
       await expect(strip).toHaveCount(0, { timeout: 15000 });
+    } finally {
+      await stopWork(request, [conversationId]);
+    }
+  });
+
+  test("collapsing the strip clears its retained rows", async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "hello there",
+    );
+    try {
+      await waitForIdle(request, conversationId);
+      for (const name of ["sixthhelper", "seventhhelper", "eighthhelper"]) {
+        expect(
+          (
+            await request.post(`/api/conversation/${conversationId}/chat`, {
+              data: { message: `subagent: ${name} bash: sleep 120`, model: "predictable" },
+            })
+          ).ok(),
+        ).toBe(true);
+        await waitForIdle(request, conversationId);
+      }
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      await expect(toggle).toContainText("3 subagents", { timeout: 30000 });
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(3);
+
+      // One subagent finishes: its row is retained beside the running ones.
+      let sixthId = "";
+      await expect
+        .poll(
+          async () => {
+            const subs = await (
+              await request.get(`/api/conversation/${conversationId}/subagents`)
+            ).json();
+            sixthId =
+              subs.find((s: { slug?: string }) => s.slug === "sixthhelper")?.conversation_id ?? "";
+            return sixthId;
+          },
+          { timeout: 30_000 },
+        )
+        .toBeTruthy();
+      expect((await request.post(`/api/conversation/${sixthId}/cancel`)).ok()).toBe(true);
+      await expect(
+        rows.filter({ hasText: "sixthhelper" }).locator(".running-work-agent-time"),
+      ).toHaveText("Finished", { timeout: 15000 });
+
+      // Collapse and re-expand while the others still run: retention was
+      // cleared on collapse, so the finished row is gone and only running
+      // work re-renders.
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await toggle.click();
+      await expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await expect(rows).toHaveCount(2);
+      await expect(rows.filter({ hasText: "sixthhelper" })).toHaveCount(0);
+      await expect(
+        rows.filter({ hasText: "seventhhelper" }).locator(".running-work-agent-time"),
+      ).toContainText("Running");
+      await expect(
+        rows.filter({ hasText: "eighthhelper" }).locator(".running-work-agent-time"),
+      ).toContainText("Running");
     } finally {
       await stopWork(request, [conversationId]);
     }

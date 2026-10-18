@@ -93,28 +93,31 @@ if (!backgroundJobs) throw new Error("RunningWorkStrip requires BackgroundJobsKe
 const open = ref(false);
 const seenJobs = shallowRef<BackgroundJob[]>([]);
 
-// The flat list, deduplicated last-wins by conversation_id — the module's
-// contract, the same rule the drawer's dayFilteredConversations applies to
-// its pool (minus the day filter: the strip shows running work regardless
-// of the panel's selected day). Walking the raw list would double-count a
-// duplicated conversation.
+// The flat list, deduplicated last-wins by conversation_id (the drawer's
+// dayFilteredConversations applies the same rule to its pool, minus the day
+// filter: the strip shows running work regardless of the panel's selected
+// day). The module resolves residual duplicates last-wins itself;
+// pre-deduping keeps the root lookup on the same canonical copy every walk
+// sees.
 const dedupedConversations = computed(() => [
   ...new Map(conversations.value.map((c) => [c.conversation_id, c])).values(),
 ]);
 
-// The open conversation's own running commands. Header tasks are running
-// work only; descendants' commands join here in task 04.
-const jobCount = computed(
-  () =>
-    conversations.value.find((c) => c.conversation_id === props.conversationId)
-      ?.running_background_jobs ?? 0,
-);
-
-// Stop list: every working descendant of the open conversation at any
-// depth. The header's subagent count and "Stop subagents" both read it.
+// The open conversation's record in the deduped list. Every tree read keys
+// off it, so when it is absent from the list (a transient gap while the
+// polled list catches up) the rows and the stop list go quiet together —
+// "No running work" — instead of rendering a subtree the stop list cannot
+// see.
 const rootConversation = computed(() =>
   dedupedConversations.value.find((c) => c.conversation_id === props.conversationId),
 );
+
+// The open conversation's own running commands; header tasks are running
+// work only.
+const jobCount = computed(() => rootConversation.value?.running_background_jobs ?? 0);
+
+// Stop list: every working descendant of the open conversation at any
+// depth. The header's subagent count and "Stop subagents" both read it.
 const stopList = computed(() =>
   rootConversation.value
     ? workingDescendants(rootConversation.value, dedupedConversations.value)
@@ -127,10 +130,13 @@ const runningSubagentCount = computed(() => stopList.value.length);
 // depth doesn't vanish mid-review. Cleared on collapse.
 const retainedIds = ref(new Set<string>());
 const rows = computed(() =>
-  stripRows(props.conversationId, dedupedConversations.value, retainedIds.value),
+  rootConversation.value
+    ? stripRows(props.conversationId, dedupedConversations.value, retainedIds.value)
+    : [],
 );
 
-// Rows the strip can show: running background jobs plus running subagents.
+// Header count and headerless threshold: running background jobs plus
+// running subagents.
 const itemCount = computed(() => jobCount.value + runningSubagentCount.value);
 
 // A single row renders directly, without the toggle header; anything more
@@ -165,8 +171,14 @@ function stopAllSubagents() {
     for (const sub of [...stopList.value]) {
       try {
         await api.cancelConversation(sub.conversation_id);
-      } catch {
-        // Lost a race with a finishing subagent; cancel the rest anyway.
+      } catch (e) {
+        // A failed cancel — typically a lost race with a finishing
+        // subagent — must not stop the rest; the error is deliberately
+        // swallowed beyond this warning (the polled list keeps the rows
+        // truthful either way).
+        console.warn(
+          `cancel failed for ${sub.conversation_id}: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
     stoppingSubagents.value = false;
@@ -185,11 +197,13 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
 }
 
 // Retention update: while expanded, every shown row id joins the retained
-// set (rows only ever grow while expanded, so a size change is the only
-// case to catch); collapsing clears it. `immediate` matters: mounted
-// mid-run (reload with work already going), `expanded` is true from the
-// first evaluation and would otherwise never fire, leaving the header
-// counting rows it never renders.
+// set; collapsing clears it. The size comparison skips no-op writes — next
+// is a superset of the current set, so equal size means nothing new —
+// which is also what stops the rows↔retention loop (rows read the
+// retained set this watcher writes) from re-firing forever. `immediate`
+// matters: mounted mid-run (reload with work already going), `expanded`
+// is true from the first evaluation and would otherwise never fire,
+// leaving the header counting rows it never renders.
 watch(
   [expanded, rows, backgroundJobs.jobs],
   ([isExpanded, currentRows, jobs]) => {
