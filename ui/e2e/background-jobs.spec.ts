@@ -124,6 +124,60 @@ test("stops every command from the header at once", async ({ page, request }) =>
   await expect(page.getByTestId("bash-tool-finished-job").first()).toHaveText("Failed");
 });
 
+test("a failed kill doesn't abort the header's remaining stops", async ({ page, request }) => {
+  const { slug, conversationId } = await createConversationViaAPIWithDetails(
+    request,
+    "bash-bg: echo ready; sleep 600",
+  );
+  try {
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+    expect(
+      (
+        await request.post(`/api/conversation/${conversationId}/chat`, {
+          data: { message: "bash-bg: sleep 601", model: "predictable" },
+        })
+      ).ok(),
+    ).toBe(true);
+    const strip = page.getByLabel("Running work", { exact: true });
+    const toggle = strip.getByTestId("running-work-toggle");
+    await expect(toggle).toContainText("2 tasks", { timeout: 15000 });
+
+    // The first kill fails (as if lost to a finishing command); the loop
+    // must still reach the rest.
+    const jobs = await (
+      await request.get(`/api/conversation/${conversationId}/background-jobs`)
+    ).json();
+    const first = jobs.find((job: { command: string }) => job.command.includes("echo ready"));
+    await page.route(
+      `**/api/conversation/${conversationId}/background-jobs/${first.job_id}/kill`,
+      (route) => route.fulfill({ status: 500, body: "lost race" }),
+    );
+    await strip.getByTestId("running-work-stop-jobs").click();
+    await expect(
+      strip
+        .getByTestId("background-job")
+        .filter({ hasText: "sleep 601" })
+        .locator(".running-command-time"),
+    ).toHaveText("Finished", { timeout: 15000 });
+    await expect(
+      strip
+        .getByTestId("background-job")
+        .filter({ hasText: "echo ready" })
+        .locator(".running-command-time"),
+    ).toContainText("Running");
+  } finally {
+    // Stop the survivors so a failed run does not leave them on the shared
+    // server (page.route only intercepts the page's own requests).
+    const jobs = await (
+      await request.get(`/api/conversation/${conversationId}/background-jobs`)
+    ).json();
+    for (const { job_id: jobId } of jobs ?? []) {
+      await request.post(`/api/conversation/${conversationId}/background-jobs/${jobId}/kill`);
+    }
+  }
+});
+
 test("historical background job notices render collapsed bash cards", async ({ page, request }) => {
   await page.setViewportSize({ width: 393, height: 851 });
   const { conversationId, slug } = await createConversationViaAPIWithDetails(

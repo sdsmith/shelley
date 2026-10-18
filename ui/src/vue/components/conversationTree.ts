@@ -202,13 +202,15 @@ export function workingDescendants<T extends ListedConversation>(
 // The running-work strip's row set for the open conversation `rootId`:
 //   - every working descendant at any depth (state "running"),
 //   - every descendant holding a running background command — listed in
-//     `jobOwnerIds` — even when its own turn is over (state "waiting"), so
-//     its commands have a row to render beneath,
+//     `conversationIdsWithJobs` — even when its own turn is over (state
+//     "waiting"), so its commands have a row to render beneath,
 //   - retained finished rows — the ids the strip tracks while expanded
 //     (state "finished"),
 //   - "Waiting" scaffolding rows for idle ancestors of any shown row
 //     (state "waiting"), so indentation always lands under a visible
 //     parent.
+// conversationIdsWithJobs is optional (empty by default): with no command
+// owners the row set is the working/retained set alone.
 // Rows come back in tree order (a child directly beneath its parent,
 // created_at ordering within siblings); `depth` counts from the open
 // conversation's direct children (0). Duplicate ids in the list resolve
@@ -229,11 +231,11 @@ export function stripRows<T extends ListedConversation>(
   rootId: string,
   convs: readonly T[],
   retainedIds: ReadonlySet<string>,
-  jobOwnerIds: ReadonlySet<string> = new Set<string>(),
+  conversationIdsWithJobs: ReadonlySet<string> = new Set<string>(),
 ): StripRow<T>[] {
   const byParent = childrenByParent(convs);
   const isShown = (c: T): boolean =>
-    c.working || retainedIds.has(c.conversation_id) || jobOwnerIds.has(c.conversation_id);
+    c.working || retainedIds.has(c.conversation_id) || conversationIdsWithJobs.has(c.conversation_id);
 
   // Post-order pass: which subtrees hold a shown row, and which hold a
   // working row (strictly below their root) — a working agent or a
@@ -250,7 +252,8 @@ export function stripRows<T extends ListedConversation>(
       walked.add(kid.conversation_id);
       const below = walk(kid.conversation_id);
       if (isShown(kid) || below.shown) shown = true;
-      if (kid.working || jobOwnerIds.has(kid.conversation_id) || below.working) working = true;
+      if (kid.working || conversationIdsWithJobs.has(kid.conversation_id) || below.working)
+        working = true;
     }
     subtreeShown.set(id, shown);
     subtreeWorking.set(id, working);
@@ -269,7 +272,7 @@ export function stripRows<T extends ListedConversation>(
       if (!isShown(kid) && !subtreeShown.get(kidId)) continue;
       const state: StripRowState = kid.working
         ? "running"
-        : subtreeWorking.get(kidId) || jobOwnerIds.has(kidId) || !retainedIds.has(kidId)
+        : subtreeWorking.get(kidId) || conversationIdsWithJobs.has(kidId) || !retainedIds.has(kidId)
           ? "waiting"
           : "finished";
       rows.push({ conversation: kid, depth, state });
