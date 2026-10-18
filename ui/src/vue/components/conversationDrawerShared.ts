@@ -1,12 +1,36 @@
 // Shared types/helpers/injection key for ConversationDrawer.vue and its row
-// child ConversationDrawerRow.vue. Mirrors the snippet/tags helpers from the
-// React components/ConversationDrawer.tsx.
+// children (ConversationDrawerRow.vue, ConversationDrawerSubrow.vue).
 import type { ComputedRef, InjectionKey, Ref } from "vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import type { TranslationKeys } from "../../i18n/types";
 import type { OfferedTag } from "../../utils/tagFilter";
+import { costReadout } from "./conversationTree";
+import { formatUsd } from "../../utils/tokenCostGraph";
 
 export type GroupBy = "none" | "daily" | "cwd" | "git_repo" | "tag" | "participants";
+
+// The session-price readout on a drawer row, shared by top-level and nested
+// rows so both encode one rule: hidden while there is no usage to price
+// (total <= 0); a spawning entry (hasChildren) reads own/total when the
+// recursive total exceeds the row's own spend, and the single total
+// otherwise; a childless entry renders its own cost — which for a childless
+// conversation is the recursive total the server reports (equal, or the
+// total when the server reports spend with no listed children).
+export interface CostParts {
+  main: string;
+  total: string | null;
+}
+
+export function costParts(
+  conversation: ConversationWithState,
+  conversations: readonly ConversationWithState[],
+): CostParts | null {
+  const { ownCost, totalCost, hasChildren } = costReadout(conversation, conversations);
+  if (totalCost <= 0) return null;
+  if (hasChildren && totalCost > ownCost)
+    return { main: formatUsd(ownCost), total: formatUsd(totalCost) };
+  return { main: formatUsd(totalCost), total: null };
+}
 
 // Parses the JSON-encoded tags field on a Conversation. Tolerates the empty
 // string and malformed JSON (treated as no tags).
@@ -67,10 +91,12 @@ export interface DrawerCtx {
   // when a conversation has more than one.
   terminalCounts: ComputedRef<Record<string, number>>;
   subagentsByParent: ComputedRef<Record<string, ConversationWithState[]>>;
-  // The flat conversation list the tree math reads (day-filtered, the same
-  // pool subagentsByParent buckets). Rows call the conversationTree module
-  // with it for badge numbers, ring conditions, and cost readouts.
-  treeConversations: ComputedRef<ConversationWithState[]>;
+  // The flat list the tree math reads: day-filtered and deduplicated
+  // last-wins — the exact pool subagentsByParent buckets. Rows pass THIS
+  // list to the conversationTree module, so badge numbers and rendered rows
+  // agree; passing any other list (props.conversations, a locally filtered
+  // one) can make numbers disagree with rows under the day filter.
+  dayFilteredConversations: ComputedRef<ConversationWithState[]>;
   // Ids the conversation list gained since its previous state (null on the
   // first seed): rows carrying one of these animate in.
   enteringIds: Ref<Set<string> | null>;

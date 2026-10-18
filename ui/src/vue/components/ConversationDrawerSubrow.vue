@@ -1,16 +1,22 @@
 <!-- Recursive row for a subagent conversation in the drawer's spawn tree.
-     Renders the subagent markup (title, own working ring, preview, date,
-     running-jobs gear, trailing cost) plus — when the entry has spawned
-     subagents of its own — the tree-aware subagent badge and the own/total
-     cost readout. An expanded entry renders its own nested list of these
-     rows beneath it, so indent grows one level per depth with no hardcoded
-     cap (the server caps nesting; the rendering is deliberately
-     depth-agnostic). Multiple root nodes so it renders inline inside its
-     parent's .subagent-list with no wrapper element. All state/handlers
-     come from the DrawerCtx inject. -->
+     Renders the subagent markup (title, own working ring, preview, and a
+     meta line: date, running-jobs gear, cost, tree-aware subagent badge).
+     An expanded entry renders its own nested list of these rows beneath it,
+     so indent grows one level per depth with no hardcoded cap (the server
+     caps nesting; the rendering is deliberately depth-agnostic). Multiple
+     root nodes so the row renders inline inside its parent's
+     .subagent-list with no wrapper element — CONSEQUENCE: attribute
+     fallthrough does not apply (Vue drops attrs on multi-root components),
+     which is why the row declares its own data-conversation-id for stable
+     per-row targeting from specs and styles; pass anything else the row
+     needs as props. All state/handlers come from the DrawerCtx inject.
+     Subrows are never drafts and never archived (both states are top-level
+     only), so the draft/archived gates the top-level row carries do not
+     apply here. -->
 <template>
   <div
     :class="`conversation-item subagent-item drawer-subagent-item-style ${isActive ? 'active' : ''}${isNew ? ' conversation-item-enter' : ''}`"
+    :data-conversation-id="conversation.conversation_id"
     @click="onSubClick"
     @auxclick="ctx.handleAuxClick($event, conversation)"
   >
@@ -35,6 +41,16 @@
         <span class="conversation-date drawer-subagent-date">{{
           ctx.formatDate(conversation.updated_at)
         }}</span>
+        <!-- Session price, right of the date in the meta line (the PRD's
+             target picture), read from the shared cost rule. -->
+        <span v-if="cost" class="conversation-cost"
+          >{{ cost.main }}<span
+            v-if="cost.total"
+            class="conversation-cost-slash"
+            aria-hidden="true"
+            >/</span
+          >{{ cost.total ?? "" }}</span
+        >
         <span
           v-if="conversation.running_background_jobs > 0"
           class="conversation-running-work"
@@ -48,17 +64,6 @@
         <ConversationDrawerSubagentBadge :conversation="conversation" />
       </div>
     </div>
-    <!-- Trailing cost, today's placement. Spawning entries read own/total
-         (today's `total > own` guard); childless entries keep their own
-         cost only. -->
-    <span v-if="costParts" class="conversation-cost"
-      >{{ costParts.main }}<span
-        v-if="costParts.total"
-        class="conversation-cost-slash"
-        aria-hidden="true"
-        >/</span
-      >{{ costParts.total ?? "" }}</span
-    >
   </div>
 
   <!-- Nested spawn tree: this entry's own subagents, recursively. -->
@@ -77,11 +82,9 @@
 <script setup lang="ts">
 import { computed, inject } from "vue";
 import type { ConversationWithState } from "../../types";
-import { DrawerCtxKey } from "./conversationDrawerShared";
-import { costReadout } from "./conversationTree";
+import { DrawerCtxKey, costParts } from "./conversationDrawerShared";
 import ConversationDrawerSubagentBadge from "./ConversationDrawerSubagentBadge.vue";
 import GearIcon from "./GearIcon.vue";
-import { formatUsd } from "../../utils/tokenCostGraph";
 
 const props = defineProps<{
   conversation: ConversationWithState;
@@ -103,14 +106,9 @@ const conversationSubagents = computed(
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
 );
-const readout = computed(() => costReadout(props.conversation, ctx.treeConversations.value));
-const costParts = computed(() => {
-  const { ownCost, totalCost, hasChildren } = readout.value;
-  if (!hasChildren) return ownCost > 0 ? { main: formatUsd(ownCost), total: null } : null;
-  if (totalCost <= 0) return null;
-  if (totalCost > ownCost) return { main: formatUsd(ownCost), total: formatUsd(totalCost) };
-  return { main: formatUsd(totalCost), total: null };
-});
+const cost = computed(() =>
+  costParts(props.conversation, ctx.dayFilteredConversations.value),
+);
 
 function onSubClick(e: MouseEvent) {
   if (ctx.handleModifiedClick(e, props.conversation)) return;
@@ -120,3 +118,4 @@ function taskTooltip(count: number): string {
   return `${count} task${count === 1 ? "" : "s"} running`;
 }
 </script>
+

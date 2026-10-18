@@ -1072,6 +1072,35 @@ body {
   margin-left: 1.5rem;
 }
 
+/* Running-jobs gear on drawer rows (top-level and nested subagent rows
+   alike): the count pill pushes to the row's trailing edge; a following
+   badge hugs it instead of splitting the free space. */
+.conversation-running-work {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 0.25rem;
+  border-radius: 0.25rem;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: var(--font-size-12);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.conversation-running-work-gear {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+}
+
+.conversation-item.active .conversation-running-work {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+}
+
 .background-jobs-empty,
 .background-jobs-error {
   font-size: var(--font-size-12);
@@ -1588,8 +1617,12 @@ body {
   flex-shrink: 0;
 }
 
-/* When both badges are shown, only the first one should push right. */
-.conversation-terminal-count + .subagent-count-badge {
+/* When both badges are shown, only the first one should push right. The
+   same for a following participant badge or running-jobs gear. */
+.conversation-terminal-count + .subagent-count-badge,
+.conversation-terminal-count + .conversation-running-work,
+.conversation-running-work + .conversation-participant-badge,
+.conversation-running-work + .subagent-count-badge {
   margin-left: 0;
 }
 
