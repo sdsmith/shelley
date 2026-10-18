@@ -282,37 +282,7 @@
           </svg>
           {{ participantEmails.length }}
         </button>
-        <button
-          v-if="!isDraft && !itemArchived && hasSubagents"
-          class="subagent-count-badge"
-          v-tooltip.top="subagentBadgeTooltip"
-          :aria-label="isExpanded ? ctx.t('collapseSubagents') : ctx.t('expandSubagents')"
-          @click="ctx.toggleSubagents($event, conversation.conversation_id)"
-        >
-          <span
-            v-if="runningSubagentCount > 0"
-            class="working-indicator"
-            data-testid="subagent-badge-running"
-            aria-hidden="true"
-          />
-          <span class="drawer-subagent-count-badge-text">
-            <template v-if="runningSubagentCount > 0">{{ runningSubagentCount }}/</template
-            >{{ subagentCount }}
-          </span>
-          <svg
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            :class="`drawer-subagent-chevron ${isExpanded ? 'drawer-subagent-chevron-expanded' : 'drawer-subagent-chevron-collapsed'}`"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              :stroke-width="2"
-              d="M9 5l7 7-7 7"
-            />
-          </svg>
-        </button>
+        <ConversationDrawerSubagentBadge v-if="!isDraft && !itemArchived" :conversation="convState" />
         <div v-if="isDraft" class="conversation-actions drawer-actions-row">
           <DeleteButton :conversation-id="conversation.conversation_id" />
         </div>
@@ -390,47 +360,11 @@
     v-if="!itemArchived && isExpanded && conversationSubagents.length > 0"
     class="subagent-list drawer-subagent-list"
   >
-    <template v-for="sub in conversationSubagents" :key="sub.conversation_id">
-      <div
-        :class="`conversation-item subagent-item drawer-subagent-item-style ${sub.conversation_id === ctx.currentConversationId.value ? 'active' : ''}${ctx.seenIds.value !== null && !ctx.seenIds.value.has(sub.conversation_id) ? ' conversation-item-enter' : ''}`"
-        @click="onSubClick($event, sub)"
-        @auxclick="ctx.handleAuxClick($event, sub)"
-      >
-        <div class="drawer-conversation-item-flex-container">
-          <div class="drawer-conversation-header-row">
-            <div class="drawer-conversation-item-flex-container">
-              <div class="conversation-title" :title="sub.slug || undefined">
-                <em v-if="!sub.slug">untitled</em>
-                <template v-else>{{ sub.slug }}</template>
-              </div>
-            </div>
-            <span
-              v-if="sub.working"
-              class="working-indicator"
-              :title="ctx.t('subagentIsWorking')"
-            />
-          </div>
-          <div class="conversation-preview" :title="sub.preview || undefined">
-            {{ sub.preview || "\u00a0" }}
-          </div>
-          <div class="conversation-meta">
-            <span class="conversation-date drawer-subagent-date">{{
-              ctx.formatDate(sub.updated_at)
-            }}</span>
-            <span
-              v-if="sub.running_background_jobs > 0"
-              class="conversation-running-work"
-              data-testid="conversation-running-work"
-              :aria-label="taskTooltip(sub.running_background_jobs)"
-              :title="taskTooltip(sub.running_background_jobs)"
-            >
-              <GearIcon class="conversation-running-work-gear" />
-              {{ sub.running_background_jobs }}
-            </span>
-          </div>
-        </div>
-      </div>
-    </template>
+    <ConversationDrawerSubrow
+      v-for="sub in conversationSubagents"
+      :key="sub.conversation_id"
+      :conversation="sub"
+    />
   </div>
 </template>
 
@@ -460,6 +394,10 @@ import {
   stripSnippetMarks,
   renderSnippetSegments,
 } from "./conversationDrawerShared";
+import ConversationDrawerSubrow from "./ConversationDrawerSubrow.vue";
+import ConversationDrawerSubagentBadge from "./ConversationDrawerSubagentBadge.vue";
+import { costReadout } from "./conversationTree";
+import { formatUsd } from "../../utils/tokenCostGraph";
 import { isTagSelected } from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
 import GearIcon from "./GearIcon.vue";
@@ -568,26 +506,34 @@ const isActive = computed(
 const conversationSubagents = computed<ConversationWithState[]>(() =>
   isDraft.value ? [] : ctx.subagentsByParent.value[props.conversation.conversation_id] || [],
 );
-const subagentCount = computed(() =>
-  isDraft.value ? 0 : conversationSubagents.value.length || convState.value.subagent_count || 0,
-);
-const hasSubagents = computed(() => subagentCount.value > 0);
+// Session price shown next to the date. With subagents the row reads
+// main/total (no labels — the tooltip spells them out); without, just the
+// session's own spend. Hidden while there is nothing to price. The
+// has-children flag and the numbers come from the conversationTree module.
+const costParts = computed(() => {
+  if (isDraft.value) return null;
+  const { ownCost, totalCost, hasChildren } = costReadout(
+    convState.value,
+    ctx.treeConversations.value,
+  );
+  if (totalCost <= 0) return null;
+  if (hasChildren && totalCost > ownCost)
+    return { main: formatUsd(ownCost), total: formatUsd(totalCost) };
+  return { main: formatUsd(totalCost) };
+});
+const costTitle = computed(() => {
+  if (!costParts.value) return "";
+  return costParts.value.total
+    ? `Estimated spend — main ${costParts.value.main}, ${costParts.value.total} with subagents`
+    : "Estimated session cost";
+});
 // Live terminals pinned to this conversation. Badged only when > 1.
 const terminalCount = computed(
   () => ctx.terminalCounts.value[props.conversation.conversation_id] ?? 0,
 );
-const runningSubagentCount = computed(
-  () => conversationSubagents.value.filter((agent) => agent.working).length,
-);
 function taskTooltip(count: number): string {
   return `${count} task${count === 1 ? "" : "s"} running`;
 }
-const subagentBadgeTooltip = computed(() => {
-  const action = isExpanded.value ? ctx.t("hideSubagents") : ctx.t("showSubagents");
-  return runningSubagentCount.value > 0
-    ? `${action} (${runningSubagentCount.value}/${subagentCount.value} ${ctx.t("running")})`
-    : action;
-});
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
 );
@@ -595,8 +541,8 @@ const itemArchived = computed(() => props.conversation.archived);
 const isNew = computed(
   () =>
     !isDraft.value &&
-    ctx.seenIds.value !== null &&
-    !ctx.seenIds.value.has(props.conversation.conversation_id),
+    ctx.enteringIds.value !== null &&
+    ctx.enteringIds.value.has(props.conversation.conversation_id),
 );
 const conversationTags = computed(() => {
   perfCount("drawerRow.tags");
@@ -617,10 +563,6 @@ function onTagChipClick(e: MouseEvent, tag: string) {
 function onRowClick(e: MouseEvent) {
   if (ctx.handleModifiedClick(e, props.conversation)) return;
   ctx.selectConversation(props.conversation);
-}
-function onSubClick(e: MouseEvent, sub: Conversation) {
-  if (ctx.handleModifiedClick(e, sub)) return;
-  ctx.selectConversation(sub);
 }
 
 function toggleActionsMenu(e: MouseEvent) {

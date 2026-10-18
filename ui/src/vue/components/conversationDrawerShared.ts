@@ -67,8 +67,14 @@ export interface DrawerCtx {
   // when a conversation has more than one.
   terminalCounts: ComputedRef<Record<string, number>>;
   subagentsByParent: ComputedRef<Record<string, ConversationWithState[]>>;
+  // The flat conversation list the tree math reads (day-filtered, the same
+  // pool subagentsByParent buckets). Rows call the conversationTree module
+  // with it for badge numbers, ring conditions, and cost readouts.
+  treeConversations: ComputedRef<ConversationWithState[]>;
+  // Ids the conversation list gained since its previous state (null on the
+  // first seed): rows carrying one of these animate in.
+  enteringIds: Ref<Set<string> | null>;
   expandedSubagents: Ref<Set<string>>;
-  seenIds: Ref<Set<string> | null>;
   copiedConvId: Ref<string | null>;
   pendingDeleteId: Ref<string | null>;
   pendingDeleteRef: Ref<HTMLElement | null>;
