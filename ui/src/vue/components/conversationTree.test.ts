@@ -18,8 +18,17 @@ function assertEqual(actual: unknown, expected: unknown, message: string): void 
 }
 
 function run(name: string, fn: () => void): void {
-  fn();
-  console.log(`\u2713 ${name}`);
+  try {
+    fn();
+    console.log(`\u2713 ${name}`);
+  } catch (err) {
+    console.error(`\u2717 ${name}`);
+    throw err;
+  }
+}
+
+function assert(cond: boolean, msg: string): void {
+  if (!cond) throw new Error(`Assertion failed: ${msg}`);
 }
 
 // Fixture builders in the conversationSort.test.ts style: conversations as
@@ -27,7 +36,9 @@ function run(name: string, fn: () => void): void {
 // Every conversation gets a distinct created_at (monotonic per file) unless
 // one is passed explicitly.
 let tick = 0;
-const iso = (n: number): string => `2026-01-01T12:00:${String(n).padStart(2, "0")}Z`;
+// Seconds offset from a fixed instant — Date rolls it into minutes/days, so
+// any tick count stays a valid, monotonically increasing timestamp.
+const iso = (n: number): string => new Date(Date.UTC(2026, 0, 1, 12, 0, n)).toISOString();
 const conv = (
   id: string,
   parent: string | null,
@@ -496,4 +507,84 @@ run("quirk: archived descendants are invisible to Z and to the strip's rows", ()
     ["c1"],
     "rows undercount",
   );
+});
+
+// --- Deterministic ordering (review fix 1) ---
+
+run("sibling ids tie-break by codepoint, not host-locale collation", () => {
+  const top = conv("top", null);
+  const lower = conv("abc", "top", { created_at: iso(20) });
+  const upper = conv("BCD", "top", { created_at: iso(20) });
+  // Under en-US collation "abc".localeCompare("BCD") is -1 (lowercase first);
+  // codepoint order puts "B" (0x42) before "a" (0x61). The tree order must
+  // not depend on the host's locale.
+  const tree = childrenByParent([top, lower, upper]);
+  assertEqual(ids(tree.get("top") ?? []), ["BCD", "abc"], "codepoint tie-break");
+});
+
+run("created_at orders by instant, not string shape", () => {
+  const top = conv("top", null);
+  const offset = conv("off", "top", { created_at: "2026-01-01T13:00:20+01:00" }); // = 12:00:20Z
+  const zulu = conv("zulu", "top", { created_at: iso(20) }); // 12:00:20Z, same instant
+  const tree = childrenByParent([top, offset, zulu]);
+  assertEqual(ids(tree.get("top") ?? []), ["off", "zulu"], "same instant → id tie-break");
+});
+
+run("an unparseable created_at crashes loudly rather than mis-ordering", () => {
+  const list = [conv("top", null), conv("bad", "top", { created_at: "not-a-date" })];
+  let message = "";
+  try {
+    childrenByParent(list);
+  } catch (err) {
+    message = (err as Error).message;
+  }
+  assert(message.includes("invalid created_at"), `expected a throw, got: ${message}`);
+});
+
+// --- Duplicate-id contract (review fix 3) ---
+
+run("duplicate ids resolve last-wins, subtree attributed once", () => {
+  const p1 = conv("p1", null);
+  const c = conv("c", "p1");
+  const underP1 = conv("dup", "p1"); // earlier copy — dropped
+  const underC = conv("dup", "c"); // later copy — wins, like ancestorChain's id map
+  const kid = conv("kid", "dup");
+  const list = [p1, c, underP1, underC, kid];
+  const tree = childrenByParent(list);
+  assertEqual(ids(tree.get("p1") ?? []), ["c"], "earlier duplicate dropped from p1");
+  assertEqual(ids(tree.get("c") ?? []), ["dup"], "later duplicate wins");
+  assertEqual(subagentBadge(p1, list).descendants, 3, "subtree counted once, not twice");
+});
+
+// --- Cycle guards (review fix 2) ---
+
+run("cycle: a self-parented conversation terminates every walker", () => {
+  const list = [conv("x", "x", { working: true })];
+  assertEqual(subagentBadge(list[0], list).descendants, 0, "badge z terminates");
+  assertEqual(ids(workingDescendants(list[0], list)), [], "stop list terminates");
+  assertEqual(
+    stripRows("x", list, new Set()).map((r) => ids([r.conversation])[0]),
+    ["x"],
+    "strip terminates",
+  );
+});
+
+run("cycle: a two-entry parent loop terminates every walker", () => {
+  const list = [
+    conv("a", "b", { working: true }),
+    conv("b", "a", { working: true }),
+  ];
+  assertEqual(subagentBadge(list[0], list).descendants, 1, "badge z terminates");
+  assertEqual(ids(workingDescendants(list[0], list)), ["b"], "stop list terminates");
+  assertEqual(
+    stripRows("a", list, new Set()).map((r) => ids([r.conversation])[0]),
+    ["b", "a"],
+    "strip terminates",
+  );
+});
+
+run("cycle: ancestorChain terminates on a looping parent chain", () => {
+  const list = [conv("c1", "gc1"), conv("gc1", "c1")];
+  const chain = ancestorChain(list[0], list);
+  assert(chain.length <= 2, `chain must terminate, got ${chain.length} links`);
 });
