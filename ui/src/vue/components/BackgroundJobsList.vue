@@ -1,7 +1,12 @@
 <template>
-  <div class="running-commands" role="group" aria-label="Commands">
+  <div
+    class="running-commands"
+    role="group"
+    aria-label="Commands"
+    :style="{ '--strip-depth': depth ?? 0 }"
+  >
     <div v-if="error" class="background-jobs-error" role="alert">{{ error }}</div>
-    <div v-if="liveJobs === null" class="background-jobs-empty">{{ error ? "" : "Loading…" }}</div>
+    <div v-if="loading" class="background-jobs-empty">Loading…</div>
     <div v-else-if="jobs.length === 0" class="background-jobs-empty">No running jobs.</div>
     <details
       v-for="job in jobs"
@@ -33,7 +38,7 @@
             data-testid="background-job-kill"
             :disabled="killing.has(job.job_id)"
             :aria-label="`Stop command: ${job.command}`"
-            @click="stop(job.job_id)"
+            @click="stop(conversationId, job.job_id)"
           >
             {{ killing.has(job.job_id) ? "Stopping…" : "Stop command" }}
           </button>
@@ -52,15 +57,32 @@ import type { BackgroundJob } from "../../services/api";
 import { BackgroundJobsKey } from "../composables/backgroundJobs";
 import RunningToolTime from "./tools/RunningToolTime.vue";
 
-defineProps<{ jobs: BackgroundJob[] }>();
+// One conversation's command group of the running-work strip: the strip's
+// retained `jobs` for `conversationId`, live-checked against the
+// composable's polled group — polled commands show elapsed time and a stop
+// button, the rest read Finished. `depth` indents the group one step under
+// its owning agent's row (the open conversation's own group sits at 0).
+const props = defineProps<{ conversationId: string; jobs: BackgroundJob[]; depth?: number }>();
 
 const backgroundJobs = inject(BackgroundJobsKey);
 if (!backgroundJobs) throw new Error("BackgroundJobsList requires BackgroundJobsKey");
-const { jobs: liveJobs, error, killing, stop } = backgroundJobs;
-const runningIds = computed(() => new Set((liveJobs.value ?? []).map((job) => job.job_id)));
+const { stop } = backgroundJobs;
+const group = computed(() => backgroundJobs.jobsByConversation.value.get(props.conversationId));
+const loading = computed(() => group.value?.jobs === null);
+const runningIds = computed(() => new Set((group.value?.jobs ?? []).map((job) => job.job_id)));
+const error = computed(() => group.value?.error ?? "");
+const NOT_KILLING = new Set<string>();
+const killing = computed(() => group.value?.killing ?? NOT_KILLING);
 </script>
 
 <style scoped>
+.running-commands {
+  /* Tree depth indent: one 1.5rem step per level under the strip's root,
+     matching the agent rows; the group's own 14px row padding aligns the
+     commands with the agent row at the same depth. */
+  padding-left: calc(var(--strip-depth, 0) * 1.5rem);
+}
+
 .running-command + .running-command {
   border-top: 1px solid var(--border);
 }

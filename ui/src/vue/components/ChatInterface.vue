@@ -823,16 +823,13 @@ const props = withDefaults(
 const { t } = useI18n();
 const conversations = inject(ConversationsListKey);
 if (!conversations) throw new Error("ChatInterface requires ConversationsListKey");
-const backgroundJobCount = computed(
-  () =>
-    conversations.value.find((c) => c.conversation_id === props.conversationId)
-      ?.running_background_jobs ?? 0,
-);
 provide(
   BackgroundJobsKey,
   useBackgroundJobs(
     computed(() => props.conversationId),
-    backgroundJobCount,
+    // The polled list: the composable derives the open conversation's tree
+    // from it — its own and its descendants' running commands.
+    conversations,
   ),
 );
 const { markdownMode } = useMarkdownMode();

@@ -59,14 +59,27 @@
       role="region"
       aria-label="Running work details"
     >
-      <RunningWorkAgent
-        v-for="row in rows"
-        :key="row.conversation.conversation_id"
-        :conversation="row.conversation"
-        :state="row.state"
-        :depth="row.depth"
+      <template v-for="row in rows" :key="row.conversation.conversation_id">
+        <RunningWorkAgent
+          :conversation="row.conversation"
+          :state="row.state"
+          :depth="row.depth"
+        />
+        <!-- A descendant's running commands render indented under their
+             agent's row; the open conversation's own group sits at the
+             bottom, unindented, as today. -->
+        <BackgroundJobsList
+          v-if="groupVisible(row.conversation.conversation_id)"
+          :conversation-id="row.conversation.conversation_id"
+          :jobs="seenJobs.get(row.conversation.conversation_id) ?? []"
+          :depth="row.depth + 1"
+        />
+      </template>
+      <BackgroundJobsList
+        v-if="groupVisible(conversationId)"
+        :conversation-id="conversationId"
+        :jobs="seenJobs.get(conversationId) ?? []"
       />
-      <BackgroundJobsList v-if="jobCount > 0 || seenJobs.length > 0" :jobs="seenJobs" />
     </div>
   </section>
 </template>
@@ -79,7 +92,7 @@ import { ConversationsListKey } from "../composables/subagentLive";
 import BackgroundJobsList from "./BackgroundJobsList.vue";
 import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
-import { stripRows, workingDescendants } from "./conversationTree";
+import { childrenByParent, descendantsOf, stripRows, workingDescendants } from "./conversationTree";
 import { api } from "../../services/api";
 
 const props = defineProps<{ conversationId: string }>();
@@ -89,9 +102,12 @@ const conversations = inject(ConversationsListKey);
 if (!conversations) throw new Error("RunningWorkStrip requires ConversationsListKey");
 const backgroundJobs = inject(BackgroundJobsKey);
 if (!backgroundJobs) throw new Error("RunningWorkStrip requires BackgroundJobsKey");
+const { stop: stopJob, jobsByConversation } = backgroundJobs;
 
 const open = ref(false);
-const seenJobs = shallowRef<BackgroundJob[]>([]);
+// Commands seen while expanded, per conversation — finished command rows
+// stay visible until collapse (the agent rows' retention rule, per group).
+const seenJobs = shallowRef(new Map<string, BackgroundJob[]>());
 
 // The flat list, deduplicated last-wins by conversation_id (the drawer's
 // dayFilteredConversations applies the same rule to its pool, minus the day
@@ -103,6 +119,12 @@ const dedupedConversations = computed(() => [
   ...new Map(conversations.value.map((c) => [c.conversation_id, c])).values(),
 ]);
 
+// One childrenByParent derivation per list version, shared by this
+// component's tree reads (the module calls that take the raw list rebuild
+// the map internally; the walks added for descendant jobs reuse this one
+// rather than stacking another rebuild on every patch).
+const byParent = computed(() => childrenByParent(dedupedConversations.value));
+
 // The open conversation's record in the deduped list. Every tree read keys
 // off it, so when it is absent from the list (a transient gap while the
 // polled list catches up) the rows and the stop list go quiet together —
@@ -112,9 +134,17 @@ const rootConversation = computed(() =>
   dedupedConversations.value.find((c) => c.conversation_id === props.conversationId),
 );
 
-// The open conversation's own running commands; header tasks are running
-// work only.
-const jobCount = computed(() => rootConversation.value?.running_background_jobs ?? 0);
+// Header task count: the open conversation's own running commands plus its
+// descendants' — running commands at any depth count as running work,
+// whoever owns them.
+const jobCount = computed(() => {
+  const root = rootConversation.value;
+  if (!root) return 0;
+  return [root, ...descendantsOf(root.conversation_id, byParent.value)].reduce(
+    (total, c) => total + c.running_background_jobs,
+    0,
+  );
+});
 
 // Stop list: every working descendant of the open conversation at any
 // depth. The header's subagent count and "Stop subagents" both read it.
@@ -125,13 +155,23 @@ const stopList = computed(() =>
 );
 const runningSubagentCount = computed(() => stopList.value.length);
 
+// The conversations the composable is polling — the open conversation plus
+// every descendant holding running commands. A descendant owner becomes a
+// strip row even when its turn is over, so its commands indent beneath it.
+const jobOwnerIds = computed(() => new Set(backgroundJobs.jobsByConversation.value.keys()));
+
 // Retention while expanded: every row the strip has shown — including the
 // Waiting scaffolding rows — stays until collapse, so finished work at any
 // depth doesn't vanish mid-review. Cleared on collapse.
 const retainedIds = ref(new Set<string>());
 const rows = computed(() =>
   rootConversation.value
-    ? stripRows(props.conversationId, dedupedConversations.value, retainedIds.value)
+    ? stripRows(
+        props.conversationId,
+        dedupedConversations.value,
+        retainedIds.value,
+        jobOwnerIds.value,
+      )
     : [],
 );
 
@@ -147,20 +187,33 @@ const single = computed(() => itemCount.value === 1);
 
 const expanded = computed(() => single.value || open.value);
 
-// Header actions: stop every live background command / cancel every working
-// descendant. Each button greys out while its kind has nothing running; the
-// commands button also reads "Stopping…" while every live job sits in the
-// composable's killing set (pruned as the jobs leave the polled list).
-const liveJobs = computed(() => backgroundJobs.jobs.value ?? []);
+// A command group renders while its conversation is polled (loading or
+// live) and, after polling stops, while the strip retains commands it
+// showed — finished rows stay until collapse.
+function groupVisible(id: string): boolean {
+  return jobsByConversation.value.has(id) || (seenJobs.value.get(id)?.length ?? 0) > 0;
+}
+
+// Header actions: stop every live background command — the open
+// conversation's and its descendants' — / cancel every working descendant.
+// Each button greys out while its kind has nothing running; the commands
+// button also reads "Stopping…" while every live job sits in its group's
+// killing set (pruned as the jobs leave the polled lists).
 const allJobsStopping = computed(() => {
-  const jobs = liveJobs.value;
-  const { killing } = backgroundJobs;
-  return jobs.length > 0 && jobs.every((job) => killing.value.has(job.job_id));
+  const groups = [...jobsByConversation.value.values()];
+  const live = groups.flatMap((group) => group.jobs ?? []);
+  return (
+    live.length > 0 &&
+    groups.every((group) => (group.jobs ?? []).every((job) => group.killing.has(job.job_id)))
+  );
 });
-const { stop: stopJob } = backgroundJobs;
 
 function stopAllJobs() {
-  for (const job of liveJobs.value) void stopJob(job.job_id);
+  // Snapshot: a group dropped or a job finished mid-loop is caught on the
+  // next click.
+  for (const [id, group] of [...jobsByConversation.value]) {
+    for (const job of group.jobs ?? []) void stopJob(id, job.job_id);
+  }
 }
 
 const stoppingSubagents = ref(false);
@@ -197,27 +250,34 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
 }
 
 // Retention update: while expanded, every shown row id joins the retained
-// set; collapsing clears it. The size comparison skips no-op writes — next
-// is a superset of the current set, so equal size means nothing new —
-// which is also what stops the rows↔retention loop (rows read the
-// retained set this watcher writes) from re-firing forever. `immediate`
-// matters: mounted mid-run (reload with work already going), `expanded`
-// is true from the first evaluation and would otherwise never fire,
-// leaving the header counting rows it never renders.
+// set, and every polled group's live commands merge into that
+// conversation's seen list; collapsing clears both. The size comparison
+// skips no-op writes — next is a superset of the current set, so equal size
+// means nothing new — which is also what stops the rows↔retention loop
+// (rows read the retained set this watcher writes). `immediate` matters:
+// mounted mid-run (reload with work already going), `expanded` is true from
+// the first evaluation and would otherwise never fire, leaving the header
+// counting rows it never renders.
 watch(
-  [expanded, rows, backgroundJobs.jobs],
-  ([isExpanded, currentRows, jobs]) => {
+  [expanded, rows, backgroundJobs.jobsByConversation],
+  ([isExpanded, currentRows, liveGroups]) => {
     if (!isExpanded) {
       if (retainedIds.value.size > 0) retainedIds.value = new Set();
-      seenJobs.value = [];
+      if (seenJobs.value.size > 0) seenJobs.value = new Map();
       return;
     }
-    const next = new Set(retainedIds.value);
-    for (const row of currentRows) next.add(row.conversation.conversation_id);
-    if (next.size !== retainedIds.value.size) retainedIds.value = next;
-    if (jobs !== null) {
-      seenJobs.value = remember(seenJobs.value, jobs, (job) => job.job_id);
+    const nextIds = new Set(retainedIds.value);
+    for (const row of currentRows) nextIds.add(row.conversation.conversation_id);
+    if (nextIds.size !== retainedIds.value.size) retainedIds.value = nextIds;
+    // Per conversation: a group still loading contributes nothing yet, and
+    // a group that stopped polling keeps its seen commands — they render
+    // Finished until collapse.
+    const nextJobs = new Map(seenJobs.value);
+    for (const [id, group] of liveGroups) {
+      if (group.jobs === null) continue;
+      nextJobs.set(id, remember(nextJobs.get(id) ?? [], group.jobs, (job) => job.job_id));
     }
+    seenJobs.value = nextJobs;
   },
   { immediate: true },
 );
