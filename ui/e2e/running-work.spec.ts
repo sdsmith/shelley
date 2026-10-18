@@ -306,6 +306,100 @@ test.describe("running work", () => {
     }
   });
 
+  test("a subagent's own background command indents under its agent and stops from the header", async ({
+    page,
+    request,
+  }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "hello there",
+    );
+    let middleId = "";
+    try {
+      // The open conversation's own long-running command...
+      await waitForIdle(request, conversationId);
+      expect(
+        (
+          await request.post(`/api/conversation/${conversationId}/chat`, {
+            data: { message: "bash-bg: sleep 602", model: "predictable" },
+          })
+        ).ok(),
+      ).toBe(true);
+      await waitForIdle(request, conversationId);
+      // ...and the depth-2 tree: an idle middle with two working leaves.
+      await spawnDepth2Tree(request, conversationId, "jobs-", (id) => {
+        middleId = id;
+      });
+      // The middle backgrounds its own command; its turn ends, the command
+      // keeps running.
+      expect(
+        (
+          await request.post(`/api/conversation/${middleId}/chat`, {
+            data: { message: "bash-bg: echo fromsub; sleep 603", model: "predictable" },
+          })
+        ).ok(),
+      ).toBe(true);
+      await waitForIdle(request, middleId);
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      // Header counts both kinds: the two running leaves plus the two
+      // running commands (the open conversation's own and the middle's).
+      await expect(toggle).toContainText("2 tasks", { timeout: 30000 });
+      await expect(toggle).toContainText("2 subagents");
+
+      await toggle.click();
+      const items = strip.getByTestId("running-work-items");
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(3, { timeout: 15000 });
+      const middleRow = rows.filter({ hasText: "middletask" });
+      const leafOne = rows.filter({ hasText: "leafone" });
+      await expect(middleRow.locator(".running-work-agent-time")).toHaveText("Waiting");
+
+      // The middle's command renders in its own group directly beneath the
+      // middle's row, indented one step past it — level with the leaves.
+      const jobRows = items.getByTestId("background-job");
+      await expect(jobRows).toHaveCount(2, { timeout: 15000 });
+      const middleJob = jobRows.filter({ hasText: "echo fromsub" });
+      await expect(middleJob).toBeVisible({ timeout: 15000 });
+      const middleGroup = items.locator(".running-commands").filter({ hasText: "echo fromsub" });
+      await expect
+        .poll(() => middleGroup.evaluate((el) => el.previousElementSibling?.textContent ?? ""), {
+          timeout: 30_000,
+        })
+        .toContain("middletask");
+      const xs = await Promise.all(
+        [
+          middleRow.locator("strong"),
+          leafOne.locator("strong"),
+          middleJob.locator(".running-command-tool"),
+          jobRows.filter({ hasText: "sleep 602" }).locator(".running-command-tool"),
+        ].map(async (part) => (await part.boundingBox())!.x),
+      );
+      expect(xs[2] - xs[0]).toBeGreaterThanOrEqual(20);
+      expect(Math.abs(xs[2] - xs[1])).toBeLessThan(2);
+      // The open conversation's own group sits unindented at the bottom.
+      expect(xs[3] - xs[2]).toBeLessThanOrEqual(-20);
+
+      // Stop commands covers both conversations' commands — and leaves the
+      // working leaves alone.
+      await strip.getByTestId("running-work-stop-jobs").click();
+      await expect(middleJob.locator(".running-command-time")).toHaveText("Finished", {
+        timeout: 15000,
+      });
+      await expect(
+        jobRows.filter({ hasText: "sleep 602" }).locator(".running-command-time"),
+      ).toHaveText("Finished", { timeout: 15000 });
+      await expect(toggle).toContainText("2 subagents", { timeout: 15000 });
+      await expect(toggle).not.toContainText("task");
+      await expect(strip.getByTestId("running-work-stop-jobs")).toBeDisabled();
+      await expect(leafOne.locator(".running-work-agent-time")).toContainText("Running");
+    } finally {
+      await stopWork(request, [conversationId, middleId].filter(Boolean));
+    }
+  });
+
   test("a subagent conversation's strip shows its own subtree", async ({ page, request }) => {
     const { conversationId } = await createConversationViaAPIWithDetails(request, "hello there");
     let middleId = "";

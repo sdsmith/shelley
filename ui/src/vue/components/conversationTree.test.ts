@@ -588,3 +588,73 @@ run("cycle: ancestorChain terminates on a looping parent chain", () => {
   const chain = ancestorChain(list[0], list);
   assert(chain.length <= 2, `chain must terminate, got ${chain.length} links`);
 });
+
+// --- Descendant background jobs (phase 4) ---
+
+run("strip: an idle descendant holding a running command gets a Waiting row to anchor it", () => {
+  // The agent's turn is over (it backgrounded the command), nothing below
+  // it runs — without a row its command would have nothing to indent under.
+  const list = [conv("top", null), conv("c1", "top")];
+  assertEqual(
+    stripRows("top", list, new Set(), new Set(["c1"])).map(
+      (r) => [ids([r.conversation])[0], r.state, r.depth],
+    ),
+    [["c1", "waiting", 0]],
+    "job owner anchors its command row",
+  );
+});
+
+run("strip: a working agent that also holds commands still reads Running", () => {
+  const list = [conv("top", null), conv("c1", "top", { working: true })];
+  assertEqual(
+    stripRows("top", list, new Set(), new Set(["c1"])).map((r) => [ids([r.conversation])[0], r.state]),
+    [["c1", "running"]],
+    "running wins over waiting",
+  );
+});
+
+run("strip: command activity holds a retained ancestor open as Waiting", () => {
+  // A retained row only reads Finished once nothing below it runs — a
+  // descendant's running command counts as running.
+  const list = [
+    conv("top", null),
+    conv("c1", "top"), // retained, idle
+    conv("gc1", "c1"), // idle, holds the running command
+  ];
+  assertEqual(
+    stripRows("top", list, new Set(["c1"]), new Set(["gc1"])).map(
+      (r) => [ids([r.conversation])[0], r.state, r.depth],
+    ),
+    [
+      ["c1", "waiting", 0],
+      ["gc1", "waiting", 1],
+    ],
+    "the scaffold chain stays Waiting while the command runs",
+  );
+});
+
+run("strip: command-owner rows join the retained set's finished state when the command ends", () => {
+  // Once the command's conversation stops being an owner, a shown row falls
+  // back to today's states — the caller's retention keeps it as Finished.
+  const list = [conv("top", null), conv("c1", "top")];
+  assertEqual(
+    stripRows("top", list, new Set(["c1"]), new Set()).map((r) => [ids([r.conversation])[0], r.state]),
+    [["c1", "finished"]],
+    "finished once retention holds it and nothing runs",
+  );
+});
+
+run("strip: owners outside the open conversation's tree are ignored", () => {
+  const list = [
+    conv("top", null),
+    conv("other", null),
+    conv("otherkid", "other"),
+  ];
+  assertEqual(
+    stripRows("top", list, new Set(), new Set(["otherkid", "top", "ghost"])).map(
+      (r) => ids([r.conversation])[0],
+    ),
+    [],
+    "foreign owners produce no rows",
+  );
+});
