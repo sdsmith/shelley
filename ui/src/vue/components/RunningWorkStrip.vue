@@ -15,12 +15,12 @@
           <span v-if="itemCount === 0">No running work</span>
           <span v-if="jobCount > 0">{{ jobCount }} task{{ jobCount === 1 ? "" : "s" }}</span>
           <span
-            v-if="jobCount > 0 && subagents.length > 0"
+            v-if="jobCount > 0 && runningSubagentCount > 0"
             class="running-work-separator"
             aria-hidden="true"
           />
-          <span v-if="subagents.length > 0">
-            {{ subagents.length }} subagent{{ subagents.length === 1 ? "" : "s" }}
+          <span v-if="runningSubagentCount > 0">
+            {{ runningSubagentCount }} subagent{{ runningSubagentCount === 1 ? "" : "s" }}
           </span>
         </span>
         <span class="running-work-view">
@@ -44,7 +44,7 @@
           class="running-work-stop"
           data-testid="running-work-stop-subagents"
           aria-label="Stop all running subagents"
-          :disabled="subagents.length === 0 || stoppingSubagents"
+          :disabled="runningSubagentCount === 0 || stoppingSubagents"
           @click="stopAllSubagents"
         >
           {{ stoppingSubagents ? "Stopping…" : "Stop subagents" }}
@@ -60,10 +60,11 @@
       aria-label="Running work details"
     >
       <RunningWorkAgent
-        v-for="sub in seenSubagents"
-        :key="sub.conversation_id"
-        :conversation="sub"
-        :finished="!runningSubagentIds.has(sub.conversation_id)"
+        v-for="row in rows"
+        :key="row.conversation.conversation_id"
+        :conversation="row.conversation"
+        :state="row.state"
+        :depth="row.depth"
       />
       <BackgroundJobsList v-if="jobCount > 0 || seenJobs.length > 0" :jobs="seenJobs" />
     </div>
@@ -72,13 +73,13 @@
 
 <script setup lang="ts">
 import { computed, inject, ref, shallowRef, watch } from "vue";
-import type { ConversationWithState } from "../../types";
 import type { BackgroundJob } from "../../services/api";
 import { BackgroundJobsKey } from "../composables/backgroundJobs";
 import { ConversationsListKey } from "../composables/subagentLive";
 import BackgroundJobsList from "./BackgroundJobsList.vue";
 import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
+import { stripRows, workingDescendants } from "./conversationTree";
 import { api } from "../../services/api";
 
 const props = defineProps<{ conversationId: string }>();
@@ -90,32 +91,58 @@ const backgroundJobs = inject(BackgroundJobsKey);
 if (!backgroundJobs) throw new Error("RunningWorkStrip requires BackgroundJobsKey");
 
 const open = ref(false);
-const seenSubagents = shallowRef<ConversationWithState[]>([]);
 const seenJobs = shallowRef<BackgroundJob[]>([]);
 
+// The flat list, deduplicated last-wins by conversation_id — the module's
+// contract, the same rule the drawer's dayFilteredConversations applies to
+// its pool (minus the day filter: the strip shows running work regardless
+// of the panel's selected day). Walking the raw list would double-count a
+// duplicated conversation.
+const dedupedConversations = computed(() => [
+  ...new Map(conversations.value.map((c) => [c.conversation_id, c])).values(),
+]);
+
+// The open conversation's own running commands. Header tasks are running
+// work only; descendants' commands join here in task 04.
 const jobCount = computed(
   () =>
     conversations.value.find((c) => c.conversation_id === props.conversationId)
       ?.running_background_jobs ?? 0,
 );
-const subagents = computed(() =>
-  conversations.value.filter((c) => c.parent_conversation_id === props.conversationId && c.working),
+
+// Stop list: every working descendant of the open conversation at any
+// depth. The header's subagent count and "Stop subagents" both read it.
+const rootConversation = computed(() =>
+  dedupedConversations.value.find((c) => c.conversation_id === props.conversationId),
 );
-const runningSubagentIds = computed(
-  () => new Set(subagents.value.map((sub) => sub.conversation_id)),
+const stopList = computed(() =>
+  rootConversation.value
+    ? workingDescendants(rootConversation.value, dedupedConversations.value)
+    : [],
+);
+const runningSubagentCount = computed(() => stopList.value.length);
+
+// Retention while expanded: every row the strip has shown — including the
+// Waiting scaffolding rows — stays until collapse, so finished work at any
+// depth doesn't vanish mid-review. Cleared on collapse.
+const retainedIds = ref(new Set<string>());
+const rows = computed(() =>
+  stripRows(props.conversationId, dedupedConversations.value, retainedIds.value),
 );
 
 // Rows the strip can show: running background jobs plus running subagents.
-const itemCount = computed(() => jobCount.value + subagents.value.length);
+const itemCount = computed(() => jobCount.value + runningSubagentCount.value);
 
 // A single row renders directly, without the toggle header; anything more
 // starts collapsed behind the header's count (the user's toggle opens it).
+// Waiting scaffolding and retained finished rows never count toward this —
+// only running work does.
 const single = computed(() => itemCount.value === 1);
 
 const expanded = computed(() => single.value || open.value);
 
-// Header actions: stop every live background command / cancel every running
-// subagent. Each button greys out while its kind has nothing running; the
+// Header actions: stop every live background command / cancel every working
+// descendant. Each button greys out while its kind has nothing running; the
 // commands button also reads "Stopping…" while every live job sits in the
 // composable's killing set (pruned as the jobs leave the polled list).
 const liveJobs = computed(() => backgroundJobs.jobs.value ?? []);
@@ -135,11 +162,11 @@ function stopAllSubagents() {
   if (stoppingSubagents.value) return;
   stoppingSubagents.value = true;
   void (async () => {
-    for (const sub of [...subagents.value]) {
+    for (const sub of [...stopList.value]) {
       try {
         await api.cancelConversation(sub.conversation_id);
       } catch {
-        break; // lost a race with a finishing subagent; the rest still cancel
+        // Lost a race with a finishing subagent; cancel the rest anyway.
       }
     }
     stoppingSubagents.value = false;
@@ -157,22 +184,23 @@ function remember<T>(seen: T[], current: T[], key: (item: T) => string): T[] {
   return [...items.values()];
 }
 
-// `immediate` matters: mounted mid-run (reload with work already going),
-// `expanded` is true from the first evaluation and would otherwise never
-// fire, leaving the header counting rows it never renders.
+// Retention update: while expanded, every shown row id joins the retained
+// set (rows only ever grow while expanded, so a size change is the only
+// case to catch); collapsing clears it. `immediate` matters: mounted
+// mid-run (reload with work already going), `expanded` is true from the
+// first evaluation and would otherwise never fire, leaving the header
+// counting rows it never renders.
 watch(
-  [expanded, subagents, backgroundJobs.jobs],
-  ([isExpanded, agents, jobs]) => {
+  [expanded, rows, backgroundJobs.jobs],
+  ([isExpanded, currentRows, jobs]) => {
     if (!isExpanded) {
-      seenSubagents.value = [];
+      if (retainedIds.value.size > 0) retainedIds.value = new Set();
       seenJobs.value = [];
       return;
     }
-    seenSubagents.value = remember(seenSubagents.value, agents, (sub) => sub.conversation_id).sort(
-      (a, b) =>
-        a.created_at.localeCompare(b.created_at) ||
-        a.conversation_id.localeCompare(b.conversation_id),
-    );
+    const next = new Set(retainedIds.value);
+    for (const row of currentRows) next.add(row.conversation.conversation_id);
+    if (next.size !== retainedIds.value.size) retainedIds.value = next;
     if (jobs !== null) {
       seenJobs.value = remember(seenJobs.value, jobs, (job) => job.job_id);
     }
