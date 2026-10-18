@@ -11,17 +11,69 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-async function openDiffViewer(page: Page, slug: string) {
-  await page.setViewportSize({ width: 1800, height: 900 });
-  await page.addInitScript(() => localStorage.setItem("diff-viewer-layout", "sidebar"));
+type DiffsViewport = "desktop" | "mobile";
+
+async function openDiffViewer(page: Page, slug: string, viewport: DiffsViewport = "desktop") {
+  if (viewport === "desktop") {
+    await page.setViewportSize({ width: 1800, height: 900 });
+    await page.addInitScript(() => localStorage.setItem("diff-viewer-layout", "sidebar"));
+  } else {
+    // Phone width per the suite convention (running-work.spec.ts). The
+    // sidebar-layout override is desktop-only: below 768px the viewer
+    // renders its mobile header regardless, so there is nothing to pin.
+    await page.setViewportSize({ width: 390, height: 500 });
+  }
   await page.goto(`/c/${slug}`);
   await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
-  // Desktop reaches diffs via the toolbar button; the overflow-menu item is
-  // mobile-only and hidden here (see openWorkspaceTool in helpers).
-  await openWorkspaceTool(page, "Diffs");
+  if (viewport === "desktop") {
+    // Desktop reaches diffs via the toolbar button; the overflow-menu item
+    // is mobile-only and hidden here (see openWorkspaceTool in helpers).
+    await openWorkspaceTool(page, "Diffs");
+  } else {
+    // Phones keep workspace tools in the overflow menu. Assert the diffs
+    // item is actually visible at this width before clicking, so a
+    // misplaced overflow-mobile-action / show-on-desktop-only class fails
+    // loudly here instead of timing out a click.
+    await page.getByRole("button", { name: "More options", exact: true }).click();
+    const item = page.locator(".chat-overflow-popover .overflow-menu-item", {
+      hasText: /diffs/i,
+    });
+    await expect(item).toBeVisible();
+    await item.click();
+  }
   const overlay = page.locator(".diff-viewer-overlay");
   await expect(overlay).toBeVisible({ timeout: 30000 });
   return overlay;
+}
+
+/** The changes-view fixture repo: two separated hunks in one file plus a
+ *  lock file, then a dirty working tree, so the viewer opens on working
+ *  changes. Shared by the desktop and phone-width entry tests. */
+function seedChangesRepo(tempDir: string): string {
+  const repo = join(tempDir, "repo");
+  mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Changes Test");
+  git(repo, "config", "user.email", "changes@example.com");
+
+  const appPath = join(repo, "src", "app.ts");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  const lines = Array.from({ length: 20 }, (_, index) => `export const v${index} = ${index};`);
+  writeFileSync(appPath, lines.join("\n") + "\n");
+  git(repo, "add", "src/app.ts");
+  git(repo, "commit", "-m", "Base commit\n\nPrompt: changes view base");
+
+  lines[1] = "export const v1 = 11;";
+  lines[14] = "export const v14 = 77;";
+  writeFileSync(appPath, lines.join("\n") + "\n");
+  writeFileSync(join(repo, "go.sum"), "example.com/mod v1.0.0 h1:abc=\n");
+  git(repo, "add", "src/app.ts", "go.sum");
+  git(repo, "commit", "-m", "Update app and lock\n\nPrompt: changes view commit");
+
+  // Leave the working tree dirty so the viewer opens on working changes.
+  lines[2] = "export const v2 = 22;";
+  writeFileSync(appPath, lines.join("\n") + "\n");
+  return repo;
 }
 
 test.describe("Changes view", () => {
@@ -30,30 +82,7 @@ test.describe("Changes view", () => {
     request,
   }) => {
     await withTempDir("shelley-changes-view-", async (tempDir) => {
-      const repo = join(tempDir, "repo");
-      mkdirSync(repo);
-      git(repo, "init");
-      git(repo, "config", "user.name", "Changes Test");
-      git(repo, "config", "user.email", "changes@example.com");
-
-      const appPath = join(repo, "src", "app.ts");
-      mkdirSync(join(repo, "src"), { recursive: true });
-      const lines = Array.from({ length: 20 }, (_, index) => `export const v${index} = ${index};`);
-      writeFileSync(appPath, lines.join("\n") + "\n");
-      git(repo, "add", "src/app.ts");
-      git(repo, "commit", "-m", "Base commit\n\nPrompt: changes view base");
-
-      // Two separated hunks in one file, plus a lock file.
-      lines[1] = "export const v1 = 11;";
-      lines[14] = "export const v14 = 77;";
-      writeFileSync(appPath, lines.join("\n") + "\n");
-      writeFileSync(join(repo, "go.sum"), "example.com/mod v1.0.0 h1:abc=\n");
-      git(repo, "add", "src/app.ts", "go.sum");
-      git(repo, "commit", "-m", "Update app and lock\n\nPrompt: changes view commit");
-
-      // Leave the working tree dirty so the viewer opens on working changes.
-      lines[2] = "export const v2 = 22;";
-      writeFileSync(appPath, lines.join("\n") + "\n");
+      const repo = seedChangesRepo(tempDir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
       const overlay = await openDiffViewer(page, slug);
@@ -256,6 +285,64 @@ test.describe("Changes view", () => {
       await expect(overflowToggle).toBeVisible();
       await overflowToggle.click();
       await expect(overflowToggle).toHaveText("Wrap");
+    });
+  });
+
+  test("at phone width, the overflow menu opens the same hunk collapse", async ({
+    page,
+    request,
+  }) => {
+    await withTempDir("shelley-changes-mobile-", async (tempDir) => {
+      const repo = seedChangesRepo(tempDir);
+      const slug = await createConversationViaAPI(request, "Hello", { cwd: repo });
+      const overlay = await openDiffViewer(page, slug, "mobile");
+
+      // Same changes view as desktop: the working hunk of app.ts, expanded.
+      const tourView = overlay.locator(".commit-tour-view");
+      await expect(overlay.locator(".diff-viewer-view-tabs button")).toHaveText([
+        "Changes",
+        "Files",
+      ]);
+      await expect(tourView.locator(".commit-tour-chunk")).toHaveCount(1);
+      await expect(tourView.locator(".commit-tour-chunk-header code")).toHaveText(/src\/app\.ts/);
+      await expect(tourView.locator(".commit-tour-chunk-body")).toBeVisible();
+
+      // Mobile chrome is its own design, not a truncated desktop: no
+      // side-by-side toggle, and long lines default to wrapped.
+      const switcher = overlay.locator(".diff-viewer-view-switcher");
+      await expect(switcher.getByRole("button", { name: /side-by-side/i })).toHaveCount(0);
+      const overflowToggle = switcher.getByRole("button", { name: /long lines/ });
+      await expect(overflowToggle).toHaveText("Wrap");
+
+      // Commit selection runs through the picker modal — the sidebar commit
+      // list and its range radios are desktop-only, and picking a row closes
+      // the modal with the range applied.
+      await overlay.locator(".commit-picker-trigger").click();
+      const modal = overlay.locator(".commit-picker-modal");
+      await expect(modal).toBeVisible();
+      await modal.locator("button", { hasText: "Update app and lock" }).click();
+      await expect(modal).toBeHidden();
+
+      // The same collapse semantics as desktop: the real edit expanded, the
+      // lock file's chunk mechanical and collapsed behind the "generated"
+      // toggle.
+      const chunks = tourView.locator(".commit-tour-chunk");
+      const appChunk = chunks.filter({ hasText: "src/app.ts" });
+      const trivialChunk = chunks.filter({ hasText: "go.sum" });
+      await expect(appChunk).toHaveCount(1);
+      await expect(trivialChunk).toHaveCount(1);
+      await expect(appChunk.locator(".commit-tour-chunk-header code")).toHaveText(/src\/app\.ts/);
+      await expect(appChunk.locator(".commit-tour-chunk-body")).toBeVisible();
+      await expect(trivialChunk.locator(".tour-trivial-label")).toHaveText("generated");
+      await expect(trivialChunk.locator(".commit-tour-chunk-body")).toHaveCount(0);
+
+      // Expanding the trivial chunk reveals its diff.
+      await trivialChunk.locator(".commit-tour-chunk-toggle").click();
+      await expect(trivialChunk.locator(".commit-tour-chunk-body")).toBeVisible();
+
+      // The wrap toggle works here too, same as its desktop counterpart.
+      await overflowToggle.click();
+      await expect(overflowToggle).toHaveText("Scroll");
     });
   });
 });
