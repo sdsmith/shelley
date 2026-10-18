@@ -1025,9 +1025,11 @@ watch(
   () => {
     const viewed = props.viewedConversation;
     if (showArchived.value || !viewed) return;
-    const inList = props.conversations.find(
-      (c) => c.conversation_id === viewed.conversation_id,
-    );
+    // Resolve from the deduped, day-filtered list — the same list the
+    // module reads — so this first-match lookup cannot disagree with the
+    // module's last-wins contract on a duplicated id.
+    const conversations = dayFilteredConversations.value;
+    const inList = conversations.find((c) => c.conversation_id === viewed.conversation_id);
     if (!inList) {
       const parentId = viewed.parent_conversation_id;
       if (parentId && !expandedSubagents.value.has(parentId)) {
@@ -1037,7 +1039,7 @@ watch(
     }
     if (autoExpandedFor === viewed.conversation_id) return;
     autoExpandedFor = viewed.conversation_id;
-    const ancestorIds = ancestorChain(inList, props.conversations)
+    const ancestorIds = ancestorChain(inList, conversations)
       .slice(1)
       .map((a) => a.conversation_id);
     if (ancestorIds.length === 0) return;

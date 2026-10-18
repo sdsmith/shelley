@@ -1472,6 +1472,50 @@ test.describe("drawer spawn tree", () => {
     ).toBeVisible();
   });
 
+  test("a duplicated record renders once and cannot loop the recursion", async ({ page }) => {
+    // Corrupt list: two records share limb's id and the first parents
+    // itself (the corrupt input the render path must survive). Last-wins
+    // dedupe drops the self-parenting record, so limb renders exactly once
+    // and the recursion has no cycle to walk; undeduplicated, this input
+    // rendered limb twice (duplicate v-for keys) and expanding it
+    // instantiated the row recursively without end.
+    const [trunk, limb, twig] = spawnTree();
+    const selfParenting = { ...limb, parent_conversation_id: limb.conversation_id };
+    await stubConversationList(page, [trunk, selfParenting, limb, twig]);
+
+    await page.goto("/new");
+    await expect(
+      page.locator('[data-conversation-id="trunk"] .subagent-count-badge'),
+    ).toHaveText("1 (Σ2)");
+    await expandRow(page.locator('[data-conversation-id="trunk"]'));
+    await expect(page.locator('[data-conversation-id="limb"]')).toHaveCount(1);
+    // The drawer is alive and the surviving record's subtree still walks.
+    await expandRow(page.locator('[data-conversation-id="limb"]'));
+    await expect(page.locator('[data-conversation-id="twig"]')).toHaveCount(1);
+  });
+
+  test("the archived view's first fetch bulk-loads without animating rows in", async ({
+    page,
+  }) => {
+    const active = conversation("active-one");
+    const archived = [conversation("archived-a"), conversation("archived-b")];
+    for (const c of archived) c.archived = true;
+    await stubConversationList(page, [active]);
+    await page.route("**/api/conversations/archived", (route) =>
+      route.fulfill({ json: archived }),
+    );
+
+    await page.goto("/new");
+    await page.getByRole("button", { name: "View Archived" }).click();
+    for (const a of archived) {
+      const row = page.locator(`[data-conversation-id="${a.conversation_id}"]`);
+      await expect(row).toBeVisible();
+      // A bulk load is neither the initial mount nor a new row: no enter
+      // animation on first render.
+      await expect(row).not.toHaveClass(/conversation-item-enter/);
+    }
+  });
+
   test("tag filters and searches keep revealing nested rows under their parent", async ({
     page,
   }) => {
