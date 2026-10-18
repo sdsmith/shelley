@@ -592,6 +592,7 @@ import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Popover from "primevue/popover";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
+import { ancestorChain } from "./conversationTree";
 import type { EphemeralTerminal } from "./terminalTypes";
 import {
   UNTAGGED_TERM,
@@ -939,13 +940,19 @@ watch(
   },
 );
 
+// The flat list the tree math reads: day-filtered, the same pool
+// subagentsByParent buckets, so badge numbers and rendered rows agree.
+const treeConversations = computed(() =>
+  filterConversationsByDay(props.conversations, selectedDay.value),
+);
+
 // Bucket subagents under their parent.
 const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() => {
   perfCount("drawer.subagentsByParent");
   resetOrderRefsForResort();
   void resortKey.value;
   const out: Record<string, ConversationWithState[]> = {};
-  for (const conv of filterConversationsByDay(props.conversations, selectedDay.value)) {
+  for (const conv of treeConversations.value) {
     if (conv.parent_conversation_id) {
       (out[conv.parent_conversation_id] ||= []).push(conv);
     }
@@ -961,7 +968,13 @@ const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() =
   return out;
 });
 
-// Track which ids exist so newly-added rows animate in.
+// Track which ids exist so newly-added rows animate in. enteringIds is the
+// ids the list gained since its previous state (null on the first seed, so
+// the initial mount never animates); rows read it for their enter class. It
+// must be computed in the watcher — reading the post-update seen set in a
+// row's render can never see a row as new, because this watcher runs before
+// any row re-renders.
+const enteringIds = ref<Set<string> | null>(null);
 watch(
   [() => props.conversations, archivedConversations],
   () => {
@@ -979,19 +992,35 @@ watch(
       }
       if (same) return;
     }
+    enteringIds.value = prev ? new Set([...ids].filter((id) => !prev.has(id))) : null;
     seenIds.value = ids;
   },
   { immediate: true },
 );
 
-// Auto-expand the parent when viewing one of its subagents.
+// Auto-expand the full ancestor chain when viewing a subagent, so the
+// conversation being opened is visible at any depth. Resolving the chain
+// from the list also means a spawn never auto-expands anything: only
+// navigation to a conversation does. When the viewed conversation is not in
+// the list (outside the list window), today's single hop to its direct
+// parent is kept.
 watch(
-  [() => props.viewedConversation, showArchived],
+  [() => props.viewedConversation, () => props.conversations, showArchived],
   () => {
-    const parentId = props.viewedConversation?.parent_conversation_id;
-    if (!showArchived.value && parentId && !expandedSubagents.value.has(parentId)) {
-      expandedSubagents.value = new Set([...expandedSubagents.value, parentId]);
-    }
+    const viewed = props.viewedConversation;
+    if (showArchived.value || !viewed) return;
+    const inList = props.conversations.find(
+      (c) => c.conversation_id === viewed.conversation_id,
+    );
+    const ancestorIds = inList
+      ? ancestorChain(inList, props.conversations)
+          .slice(1)
+          .map((a) => a.conversation_id)
+      : viewed.parent_conversation_id
+        ? [viewed.parent_conversation_id]
+        : [];
+    if (ancestorIds.every((id) => expandedSubagents.value.has(id))) return;
+    expandedSubagents.value = new Set([...expandedSubagents.value, ...ancestorIds]);
   },
   { immediate: true },
 );
@@ -1835,8 +1864,9 @@ provide(DrawerCtxKey, {
     return counts;
   }),
   subagentsByParent,
+  treeConversations,
   expandedSubagents,
-  seenIds,
+  enteringIds,
   copiedConvId,
   pendingDeleteId,
   pendingDeleteRef,
