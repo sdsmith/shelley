@@ -27,6 +27,40 @@ async function waitForIdle(request: APIRequestContext, conversationId: string) {
     .toBe(false);
 }
 
+// A two-level delegation tree driven through the predictable model: a
+// middletask subagent whose own turn ends immediately, then two working
+// leaf grandchildren spawned FROM that middle. `prefix` keeps each test's
+// slugs unique on the shared test server (colliding slugs get renamed).
+// Returns the middle row.
+async function spawnDepth2Tree(request: APIRequestContext, conversationId: string, prefix: string) {
+  await waitForIdle(request, conversationId);
+  expect(
+    (
+      await request.post(`/api/conversation/${conversationId}/chat`, {
+        data: { message: `subagent: ${prefix}middletask hello there`, model: "predictable" },
+      })
+    ).ok(),
+  ).toBe(true);
+  await waitForIdle(request, conversationId);
+  const middles = await (
+    await request.get(`/api/conversation/${conversationId}/subagents`)
+  ).json();
+  const middle = middles.find((s: { slug?: string }) => s.slug === `${prefix}middletask`);
+  expect(middle).toBeTruthy();
+  await waitForIdle(request, middle.conversation_id);
+  for (const name of ["leafone", "leaftwo"]) {
+    expect(
+      (
+        await request.post(`/api/conversation/${middle.conversation_id}/chat`, {
+          data: { message: `subagent: ${prefix}${name} bash: sleep 120`, model: "predictable" },
+        })
+      ).ok(),
+    ).toBe(true);
+    await waitForIdle(request, middle.conversation_id);
+  }
+  return middle;
+}
+
 test.describe("running work", () => {
   test("keeps mobile work visible and retains finished jobs while others run", async ({
     page,
@@ -180,6 +214,110 @@ test.describe("running work", () => {
     }
   });
 
+  test("lists working descendants at any depth with Waiting scaffolding and counts running work only", async ({
+    page,
+    request,
+  }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "hello there",
+    );
+    let middleId = "";
+    try {
+      const middle = await spawnDepth2Tree(request, conversationId, "");
+      middleId = middle.conversation_id;
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      // The header counts running work only: the two working leaves — the
+      // idle middle renders as Waiting scaffolding and is not counted.
+      await expect(toggle).toContainText("2 subagents", { timeout: 30000 });
+      await expect(toggle).not.toContainText("3 subagents");
+      await expect(toggle).not.toContainText("task");
+      await expect(strip.getByTestId("running-work-stop-jobs")).toBeDisabled();
+      await expect(strip.getByTestId("running-work-stop-subagents")).toBeEnabled();
+
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(3);
+      const middleRow = rows.filter({ hasText: "middletask" });
+      const leafOne = rows.filter({ hasText: "leafone" });
+      const leafTwo = rows.filter({ hasText: "leaftwo" });
+      // The idle middle is a Waiting scaffolding row; the leaves run.
+      await expect(middleRow.locator(".running-work-agent-time")).toHaveText("Waiting");
+      await expect(leafOne.locator(".running-work-agent-time")).toContainText("Running");
+      await expect(leafTwo.locator(".running-work-agent-time")).toContainText("Running");
+      // Indentation: each leaf one step past the middle, matched.
+      const xs = await Promise.all(
+        [middleRow, leafOne, leafTwo].map(
+          async (row) => (await row.locator("strong").boundingBox())!.x,
+        ),
+      );
+      expect(xs[1] - xs[0]).toBeGreaterThanOrEqual(20);
+      expect(xs[2] - xs[0]).toBeGreaterThanOrEqual(20);
+      expect(Math.abs(xs[2] - xs[1])).toBeLessThan(2);
+
+      // One click halts the whole delegation tree: the stop list is the
+      // working descendants (the two leaves — the idle middle is not on
+      // it), and the scaffolding row reads Finished once nothing below it
+      // runs.
+      await strip.getByTestId("running-work-stop-subagents").click();
+      await expect(toggle).toContainText("No running work", { timeout: 15000 });
+      await expect(leafOne.locator(".running-work-agent-time")).toHaveText("Finished", {
+        timeout: 15000,
+      });
+      await expect(leafTwo.locator(".running-work-agent-time")).toHaveText("Finished");
+      await expect(middleRow.locator(".running-work-agent-time")).toHaveText("Finished");
+      // With nothing running, the stop actions drop out of the header.
+      await expect(strip.getByTestId("running-work-stop-subagents")).toHaveCount(0);
+    } finally {
+      await stopWork(request, [conversationId, middleId].filter(Boolean));
+    }
+  });
+
+  test("a subagent conversation's strip shows its own subtree", async ({ page, request }) => {
+    const { conversationId } = await createConversationViaAPIWithDetails(request, "hello there");
+    let middleId = "";
+    try {
+      const middle = await spawnDepth2Tree(request, conversationId, "sub-");
+      middleId = middle.conversation_id;
+
+      // The strip composes recursively: opening the middle conversation
+      // shows ITS subtree — the two leaves — with no row for the middle
+      // itself or its parent.
+      await page.goto(`/c/${middle.slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      await expect(toggle).toContainText("2 subagents", { timeout: 30000 });
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+      await expect(rows).toHaveCount(2);
+      await expect(rows.filter({ hasText: "leafone" })).toBeVisible();
+      await expect(rows.filter({ hasText: "leaftwo" })).toBeVisible();
+      await expect(rows.filter({ hasText: "middletask" })).toHaveCount(0);
+
+      // One leaf stops via the server: a single running item renders
+      // headerless, and the finished leaf is retained beside it (the strip
+      // was expanded).
+      const leaves = await (await request.get(`/api/conversation/${middleId}/subagents`)).json();
+      const leafTwo = leaves.find((s: { slug?: string }) => s.slug === "sub-leaftwo");
+      expect(
+        (await request.post(`/api/conversation/${leafTwo.conversation_id}/cancel`)).ok(),
+      ).toBe(true);
+      await expect(toggle).toHaveCount(0, { timeout: 15000 });
+      await expect(rows).toHaveCount(2);
+      await expect(
+        rows.filter({ hasText: "leaftwo" }).locator(".running-work-agent-time"),
+      ).toHaveText("Finished");
+      await expect(
+        rows.filter({ hasText: "leafone" }).locator(".running-work-agent-time"),
+      ).toContainText("Running");
+    } finally {
+      await stopWork(request, [conversationId, middleId].filter(Boolean));
+    }
+  });
+
   test("starts collapsed with the count once there are more than four tasks", async ({
     page,
     request,
@@ -221,6 +359,52 @@ test.describe("running work", () => {
       const items = strip.getByTestId("running-work-items");
       await expect(items).toBeVisible();
       await expect(items.getByTestId("background-job")).toHaveCount(5);
+    } finally {
+      await stopWork(request, [conversationId]);
+    }
+  });
+
+  test("a failed cancel doesn't abort the remaining stops", async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "hello there",
+    );
+    try {
+      await waitForIdle(request, conversationId);
+      for (const name of ["fourthhelper", "fifthhelper"]) {
+        expect(
+          (
+            await request.post(`/api/conversation/${conversationId}/chat`, {
+              data: { message: `subagent: ${name} bash: sleep 120`, model: "predictable" },
+            })
+          ).ok(),
+        ).toBe(true);
+        await waitForIdle(request, conversationId);
+      }
+
+      await page.goto(`/c/${slug}`);
+      const strip = page.getByLabel("Running work", { exact: true });
+      const toggle = strip.getByTestId("running-work-toggle");
+      await expect(toggle).toContainText("2 subagents", { timeout: 30000 });
+      await toggle.click();
+      const rows = strip.locator(".running-work-agent");
+
+      const subagents = await (
+        await request.get(`/api/conversation/${conversationId}/subagents`)
+      ).json();
+      const first = subagents.find((s: { slug?: string }) => s.slug === "fourthhelper");
+      // The first cancel fails (as if lost to a finishing subagent); the
+      // loop must still reach the rest.
+      await page.route(`**/api/conversation/${first.conversation_id}/cancel`, (route) =>
+        route.fulfill({ status: 500, body: "lost race" }),
+      );
+      await strip.getByTestId("running-work-stop-subagents").click();
+      await expect(
+        rows.filter({ hasText: "fifthhelper" }).locator(".running-work-agent-time"),
+      ).toHaveText("Finished", { timeout: 15000 });
+      await expect(
+        rows.filter({ hasText: "fourthhelper" }).locator(".running-work-agent-time"),
+      ).toContainText("Running");
     } finally {
       await stopWork(request, [conversationId]);
     }

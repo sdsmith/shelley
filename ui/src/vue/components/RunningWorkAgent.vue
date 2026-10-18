@@ -2,25 +2,27 @@
   <button
     type="button"
     class="running-work-agent"
+    :style="{ '--strip-depth': depth }"
     title="Open subagent conversation"
     @click="openAgent"
   >
     <span class="running-work-agent-description">
       <strong>{{ conversation.slug }}</strong>
       <span
-        >Agent<template v-if="!finished"> · {{ activity || "Working…" }}</template></span
+        >Agent<template v-if="state === 'running'"> · {{ activity || "Working…" }}</template></span
       >
       <span v-if="loadError" role="alert">{{ loadError }}</span>
     </span>
     <RunningToolTime
-      v-if="!finished && startedAt"
+      v-if="state === 'running' && startedAt"
       v-slot="{ elapsed }"
       class="running-work-agent-time"
       :start-time="startedAt"
     >
       Running · {{ elapsed }}
     </RunningToolTime>
-    <span v-else-if="!finished" class="running-work-agent-time">Running</span>
+    <span v-else-if="state === 'running'" class="running-work-agent-time">Running</span>
+    <span v-else-if="state === 'waiting'" class="running-work-agent-time">Waiting</span>
     <span v-else class="running-work-agent-time">Finished</span>
     <span class="running-work-agent-open" aria-hidden="true">↗</span>
   </button>
@@ -29,12 +31,22 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import type { ConversationWithState } from "../../types";
+import type { StripRowState } from "./conversationTree";
 import { navigateToConversationSlug, useSubagentLive } from "../composables/subagentLive";
 import { api } from "../../services/api";
 import { messageStore } from "../../services/messageStore";
 import RunningToolTime from "./tools/RunningToolTime.vue";
 
-const props = defineProps<{ conversation: ConversationWithState; finished: boolean }>();
+// One row of the running-work strip. State is the strip row's three states:
+// running (the agent's turn is open), finished, or waiting — an idle
+// ancestor of a working descendant, its own turn over, blocked on a
+// child's report-back. Depth is the row's depth under the strip's root
+// conversation; each level indents one step.
+const props = defineProps<{
+  conversation: ConversationWithState;
+  state: StripRowState;
+  depth: number;
+}>();
 
 const { activity, startedAt } = useSubagentLive(
   computed(() => props.conversation.slug ?? ""),
@@ -74,6 +86,9 @@ function openAgent() {
   gap: 10px;
   width: 100%;
   padding: 12px 14px;
+  /* Tree depth indent: one 1.5rem step per level under the strip's root
+     (the same unit the drawer's nested rows use). */
+  padding-left: calc(14px + var(--strip-depth, 0) * 24px);
   border: 0;
   border-bottom: 1px solid var(--border);
   background: transparent;
