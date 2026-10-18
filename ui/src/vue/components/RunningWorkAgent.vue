@@ -88,7 +88,7 @@ function openAgent() {
   padding: 12px 14px;
   /* Tree depth indent: one 1.5rem step per level under the strip's root
      (the same unit the drawer's nested rows use). */
-  padding-left: calc(14px + var(--strip-depth, 0) * 24px);
+  padding-left: calc(14px + var(--strip-depth, 0) * 1.5rem);
   border: 0;
   border-bottom: 1px solid var(--border);
   background: transparent;

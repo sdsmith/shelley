@@ -183,7 +183,9 @@ export function ancestorChain<T extends ListedConversation>(
 // The stop list: every working descendant of the conversation at any depth
 // ("Stop subagents" cancels each of these; the strip header's subagent
 // count is this list's length). Tree order; the conversation itself is not
-// its own descendant.
+// its own descendant. Duplicate ids in the list resolve last-wins —
+// childrenByParent's rule — so a duplicated conversation is attributed
+// once.
 export function workingDescendants<T extends ListedConversation>(
   conv: T,
   convs: readonly T[],
@@ -202,7 +204,9 @@ export function workingDescendants<T extends ListedConversation>(
 //     parent.
 // Rows come back in tree order (a child directly beneath its parent,
 // created_at ordering within siblings); `depth` counts from the open
-// conversation's direct children (0). Working wins over waiting, waiting
+// conversation's direct children (0). Duplicate ids in the list resolve
+// last-wins (childrenByParent's rule), so a duplicated conversation
+// renders once. Working wins over waiting, waiting
 // over finished: an idle ancestor of an active descendant renders as
 // "Waiting" even if it is itself retained, and a retained row only reads
 // "Finished" once nothing below it runs.
