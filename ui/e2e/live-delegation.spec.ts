@@ -1,19 +1,31 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createConversationViaAPIWithDetails } from "./helpers";
 
+// The window globals mockVoiceBrowser installs inside the page under test
+// (via addInitScript — they exist only in the browser context, never in the
+// Node test process). Declared here so the mock and its readers type without
+// `any` casts.
+declare global {
+  interface Window {
+    __voiceTracksStopped: number;
+    __releaseVoiceMicrophone: () => void;
+    __mockLive: Live;
+  }
+}
+
 async function mockVoiceBrowser(page: Page, denyMicrophone = false, holdMicrophone = false) {
   await page.clock.install();
   await page.addInitScript(({ denied, held }) => {
-    (window as any).__voiceTracksStopped = 0;
+    window.__voiceTracksStopped = 0;
     const track = {
       kind: "audio", enabled: true,
-      stop() { (window as any).__voiceTracksStopped++; },
+      stop() { window.__voiceTracksStopped++; },
     };
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
       value: async () => {
         if (denied) throw new DOMException("Microphone denied", "NotAllowedError");
         if (held) await new Promise<void>((resolve) => {
-          (window as any).__releaseVoiceMicrophone = resolve;
+          window.__releaseVoiceMicrophone = resolve;
         });
         return { getAudioTracks: () => [track], getTracks: () => [track] };
       },
@@ -41,7 +53,7 @@ async function mockVoiceBrowser(page: Page, denyMicrophone = false, holdMicropho
       channel = new Channel();
       addTrack() {}
       createDataChannel() {
-        (window as any).__mockLive = this.channel;
+        window.__mockLive = this.channel;
         return this.channel;
       }
       createOffer() {
@@ -77,9 +89,9 @@ async function navigateWithinApp(page: Page, path: string) {
 type Live = { emit(event: Record<string, unknown>): void; sent: Array<Record<string, unknown>> };
 
 const emit = (page: Page, event: Record<string, unknown>) =>
-  page.evaluate((value) => ((window as any).__mockLive as Live).emit(value), event);
+  page.evaluate((value) => window.__mockLive.emit(value), event);
 const notes = (page: Page) =>
-  page.evaluate(() => JSON.stringify(((window as any).__mockLive as Live).sent));
+  page.evaluate(() => JSON.stringify(window.__mockLive.sent));
 
 // Live delegates a client task after this speech; Shelley settles the
 // transcript and submits it.
@@ -136,7 +148,7 @@ test("a delegated question reaches the chat, and its reply reaches Live", async 
   await expect(bar).toBeHidden();
   await expect(call).toHaveAttribute("aria-label", "Start voice conversation");
   expect(await notes(page)).toContain("session.close");
-  expect(await page.evaluate(() => (window as any).__voiceTracksStopped)).toBe(1);
+  expect(await page.evaluate(() => window.__voiceTracksStopped)).toBe(1);
   await expect(message).toHaveCount(1);
 });
 
@@ -207,7 +219,7 @@ test("a call stays pinned to its original chat while browsing other chats", asyn
   await expect(bar).toContainText("Muted");
   await page.getByTestId("live-stop").click();
   await expect(bar).toBeHidden();
-  expect(await page.evaluate(() => (window as any).__voiceTracksStopped)).toBe(1);
+  expect(await page.evaluate(() => window.__voiceTracksStopped)).toBe(1);
 });
 
 test("a call on /new starts one blank draft with the composer's selection, wherever the user browses meanwhile", async ({ page, request }) => {
@@ -220,7 +232,7 @@ test("a call on /new starts one blank draft with the composer's selection, where
   await mockVoiceBrowser(page, false, true);
   let drafts = 0;
   let startedId = "";
-  let sessionSettings: Record<string, any> | null = null;
+  let sessionSettings: Record<string, unknown> | null = null;
   await page.route("**/api/conversations/draft", (route) => {
     drafts++;
     return route.continue();
@@ -240,7 +252,7 @@ test("a call on /new starts one blank draft with the composer's selection, where
   expect(drafts).toBe(0); // nothing is created before the microphone is granted
   await navigateWithinApp(page, `/c/${other.slug}`);
   await expect(page.locator(".header-title")).toHaveText(other.slug);
-  await page.evaluate(() => (window as any).__releaseVoiceMicrophone());
+  await page.evaluate(() => window.__releaseVoiceMicrophone());
   await expect(page.getByTestId("live-bar")).toContainText("On call");
   expect(startedId).not.toBe("");
   expect(startedId).not.toBe(other.conversationId);
@@ -265,7 +277,7 @@ test("a call on /new starts one blank draft with the composer's selection, where
   await page.getByTestId("live-stop").click();
   await call.click();
   await expect(page.getByTestId("live-bar")).toContainText("Connecting");
-  await page.evaluate(() => (window as any).__releaseVoiceMicrophone());
+  await page.evaluate(() => window.__releaseVoiceMicrophone());
   await expect(page.getByTestId("live-bar")).toContainText("On call");
   expect(sessionSettings).not.toHaveProperty("conversation_options");
   await call.click();

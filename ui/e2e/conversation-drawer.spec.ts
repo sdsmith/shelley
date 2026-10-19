@@ -69,6 +69,7 @@ function conversation(
     external_endpoint: null,
     working: false,
     subagent_count: 0,
+    running_background_jobs: 0,
     preview: "Preview",
     max_sequence_id: 0,
     participants: participants?.map((participant) => ({

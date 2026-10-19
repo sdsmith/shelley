@@ -80,7 +80,7 @@ test.describe('File Upload via Paste and Drag', () => {
     await expect(overlay).toBeHidden();
   });
 
-  test('upload endpoint accepts files and returns path', async ({ page, request }) => {
+  test('upload endpoint accepts files and returns path', async ({ request }) => {
     // Test the upload endpoint directly
     const testContent = 'test file content';
     const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);

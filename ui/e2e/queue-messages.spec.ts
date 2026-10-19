@@ -112,7 +112,7 @@ test.describe('Queue Messages', () => {
     // Click cancel and wait for the server to acknowledge deletion
     const cancelButton = page.getByTestId('cancel-queued');
     await expect(cancelButton).toBeVisible();
-    const [cancelResp] = await Promise.all([page.waitForResponse((resp) => resp.url().includes('/cancel-queued') && resp.status() === 200, { timeout: 10000 }), cancelButton.tap()]);
+    await Promise.all([page.waitForResponse((resp) => resp.url().includes('/cancel-queued') && resp.status() === 200, { timeout: 10000 }), cancelButton.tap()]);
 
     await expect(page.getByTestId('message-input')).toHaveValue('echo: to be cancelled');
 

@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Locator } from '@playwright/test';
 import { createConversationViaAPI, createConversationViaAPIWithDetails, mountAllToolCards } from './helpers';
 
 test.describe('Tool Component Verification', () => {
@@ -7,7 +7,7 @@ test.describe('Tool Component Verification', () => {
   // for the initial Chrome startup, so we only pay that cost once.
   let smorgasbordSlug: string;
 
-  async function ensureSmorgasbord(request: any): Promise<string> {
+  async function ensureSmorgasbord(request: APIRequestContext): Promise<string> {
     if (!smorgasbordSlug) {
       smorgasbordSlug = await createConversationViaAPI(request, 'tool smorgasbord', {
         agentTimeout: 150000

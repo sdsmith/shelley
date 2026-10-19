@@ -31,4 +31,15 @@ export default tseslint.config(
       },
     },
   },
+  {
+    rules: {
+      // A leading underscore is the codebase's "deliberately unused"
+      // marker (e.g. an EventSource subclass must accept the URL argument
+      // it never reads).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+    },
+  },
 );

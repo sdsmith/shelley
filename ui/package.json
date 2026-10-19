@@ -6,9 +6,9 @@
   "scripts": {
     "build": "node scripts/build.js",
     "clean": "rm -rf dist/*",
-    "lint": "pnpm run lint:css && eslint src --ext .ts,.tsx",
+    "lint": "pnpm run lint:css && eslint src e2e --ext .ts,.tsx",
     "lint:css": "node scripts/lint-css.mjs",
-    "lint:fix": "eslint src --ext .ts,.tsx --fix",
+    "lint:fix": "eslint src e2e --ext .ts,.tsx --fix",
     "type-check": "tsc --noEmit",
     "type-check:vue": "vue-tsc --noEmit -p tsconfig.vue.json",
     "format": "prettier --write 'src/**/*.{ts,tsx,js,jsx,json,css,html}'",

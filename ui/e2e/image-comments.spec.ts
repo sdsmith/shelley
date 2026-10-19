@@ -500,7 +500,6 @@ test.describe("Image comments", () => {
     });
     const cdp = await page.context().newCDPSession(page);
     // Detach explicitly: the session outlives the page otherwise.
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     page.once("close", () => cdp.detach().catch(() => {}));
     const touch = (type: string, points: { x: number; y: number }[]) =>
       cdp.send("Input.dispatchTouchEvent", {
