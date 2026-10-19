@@ -222,12 +222,18 @@ test("stop() kills through the owning conversation; a failure lands on that grou
   const h = harness(t, [conv("root", null, 1), conv("mid", "root", 1)]);
   await drain();
 
-  assert.equal(await h.stop("mid", "jm1"), true, "a sent stop returns true");
+  assert.equal(await h.stop({ conversationId: "mid", jobId: "jm1" }), true, "a sent stop returns true");
   assert.deepEqual(kills, [{ conversationId: "mid", jobId: "jm1" }], "kill hits the owning conversation");
   assert.equal(h.jobsByConversation.value.get("mid")?.error, "", "success keeps the group's error empty");
 
   failKills = [{ conversationId: "mid", jobId: "jm1" }];
-  await h.stop("mid", "jm1");
+  // The next poll drops the stopped command from the list, pruning its
+  // in-flight stop marker — a stop for a command already killed re-sends
+  // instead of early-returning on the stale marker.
+  jobsByConv.set("mid", []);
+  t.mock.timers.tick(3000);
+  await drain();
+  await h.stop({ conversationId: "mid", jobId: "jm1" });
   assert.ok(
     h.jobsByConversation.value.get("mid")!.error.includes("lost race"),
     "the failed kill records on its own group",
@@ -272,7 +278,7 @@ test("stopping a command whose group already vanished is a quiet no-op", async (
   gets = [];
   const h = harness(t, [conv("root", null, 1)]);
   await drain();
-  assert.equal(await h.stop("ghost", "jg"), false, "no group → false, no throw");
+  assert.equal(await h.stop({ conversationId: "ghost", jobId: "jg" }), false, "no group → false, no throw");
   assert.deepEqual(kills, [], "no endpoint hit");
   assert.equal(h.jobsByConversation.value.get("root")?.error, "", "no error recorded");
 });

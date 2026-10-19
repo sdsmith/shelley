@@ -1,7 +1,7 @@
-import { computed, onScopeDispose, shallowRef, watch, type InjectionKey, type Ref } from "vue";
+import { computed, onScopeDispose, shallowRef, watch, type ComputedRef, type InjectionKey, type Ref } from "vue";
 import { api, type BackgroundJob } from "../../services/api";
 import type { ConversationWithState } from "../../types";
-import { childrenByParent, descendantsOf } from "../components/conversationTree";
+import { childrenByParent, dedupeConversations, descendantsOf } from "../components/conversationTree";
 
 export const BackgroundJobsKey: InjectionKey<ReturnType<typeof useBackgroundJobs>> =
   Symbol("shelley-background-jobs");
@@ -16,6 +16,26 @@ export interface BackgroundJobsGroup {
   readonly jobs: readonly BackgroundJob[] | null;
   readonly error: string;
   readonly killing: ReadonlySet<string>;
+}
+
+// What useBackgroundJobs hands its consumers. jobsByConversation is
+// Readonly by contract — state is replaced per update, never edited in
+// place — so the type forbids the one usage that would silently break
+// reactivity (the map's identity is what changes per update).
+export interface BackgroundJobs {
+  jobsByConversation: Readonly<Ref<ReadonlyMap<string, BackgroundJobsGroup>>>;
+  // Flat view of every polled group's commands — the "is this command still
+  // running" checks (a bash card's running state) key off it.
+  jobs: ComputedRef<BackgroundJob[]>;
+  // Stop one polled command. Returns false when the owning conversation's
+  // group is already gone — a quiet no-op: the stop button only renders for
+  // a polled command, so a false return means the command finished inside
+  // the click's race window (the command is done either way). Returns true
+  // once the stop was (or already had been) sent: a command with a stop in
+  // flight returns true without re-sending the kill, and a group that
+  // vanishes before the response lands still counts as stopped. An API
+  // failure surfaces on the group's error.
+  stop: (command: { conversationId: string; jobId: string }) => Promise<boolean>;
 }
 
 const POLL_MS = 3000;
@@ -46,7 +66,7 @@ function pollTargets(
   conversations: readonly ConversationWithState[],
 ): Map<string, number> {
   if (!conversationId) return new Map();
-  const deduped = [...new Map(conversations.map((c) => [c.conversation_id, c])).values()];
+  const deduped = dedupeConversations(conversations);
   const root = deduped.find((c) => c.conversation_id === conversationId);
   if (!root) return new Map();
   const byParent = childrenByParent(deduped);
@@ -64,9 +84,11 @@ export function useBackgroundJobs(
   // the watcher diffs per list version, so an in-place mutation silently
   // freezes the poll set.
   conversations: Ref<readonly ConversationWithState[]>,
-) {
+): BackgroundJobs {
   // Live commands grouped per polled conversation. Replaced immutably on
-  // every change so readers key off one identity per list version.
+  // every change so readers key off one identity per list version. Exposed
+  // through the Readonly BackgroundJobs view; internal code keeps the
+  // mutable map.
   const jobsByConversation = shallowRef(new Map<string, BackgroundJobsGroup>());
   const pollers = new Map<string, () => void>();
 
@@ -134,6 +156,9 @@ export function useBackgroundJobs(
   // group's command list tracks the header's count within one round trip
   // (the strip's stop-all must cover exactly what the header counts)
   // instead of at the next poll tick.
+  // lastCounts mirrors the count each active poller was started for: an id
+  // is in pollers iff it is in lastCounts, holding the count that poller
+  // fetches — the invariant both loops above maintain.
   const lastCounts = new Map<string, number>();
   watch(
     [conversationId, conversations],
@@ -167,26 +192,29 @@ export function useBackgroundJobs(
     [...jobsByConversation.value.values()].flatMap((group) => group.jobs ?? []),
   );
 
-  // Stop one of conversationId's polled commands. Returns false when the
-  // conversation's group is already gone — a quiet no-op: the stop button
-  // only renders for a polled command, so a false return means the command
-  // finished inside the click's race window (the command is done either
-  // way). Returns true once the stop was sent, including when the group
-  // vanishes before the response lands; an API failure surfaces on the
-  // group's error.
-  async function stop(conversationId: string, jobId: string): Promise<boolean> {
-    const group = jobsByConversation.value.get(conversationId);
+  async function stop({
+    conversationId: ownerId,
+    jobId,
+  }: {
+    conversationId: string;
+    jobId: string;
+  }): Promise<boolean> {
+    const group = jobsByConversation.value.get(ownerId);
     if (!group) return false;
-    setGroup(conversationId, { ...group, killing: new Set(group.killing).add(jobId) });
+    // One stop per command: a stop already in flight returns success
+    // without re-sending the kill (the kill endpoint is not idempotent, and
+    // a double-send would surface a spurious failure on the group's error).
+    if (group.killing.has(jobId)) return true;
+    setGroup(ownerId, { ...group, killing: new Set(group.killing).add(jobId) });
     try {
-      await api.killBackgroundJob(conversationId, jobId);
+      await api.killBackgroundJob(ownerId, jobId);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      const current = jobsByConversation.value.get(conversationId);
+      const current = jobsByConversation.value.get(ownerId);
       if (!current) return true;
       const next = new Set(current.killing);
       next.delete(jobId);
-      setGroup(conversationId, { ...current, error: message, killing: next });
+      setGroup(ownerId, { ...current, error: message, killing: next });
     }
     return true;
   }

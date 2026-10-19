@@ -41,16 +41,6 @@
         <span class="conversation-date drawer-subagent-date">{{
           ctx.formatDate(conversation.updated_at)
         }}</span>
-        <!-- Session price, right of the date in the meta line (the PRD's
-             target picture), read from the shared cost rule. -->
-        <span v-if="cost" class="conversation-cost"
-          >{{ cost.main }}<span
-            v-if="cost.total"
-            class="conversation-cost-slash"
-            aria-hidden="true"
-            >/</span
-          >{{ cost.total ?? "" }}</span
-        >
         <span
           v-if="conversation.running_background_jobs > 0"
           class="conversation-running-work"
@@ -82,7 +72,7 @@
 <script setup lang="ts">
 import { computed, inject } from "vue";
 import type { ConversationWithState } from "../../types";
-import { DrawerCtxKey, costParts } from "./conversationDrawerShared";
+import { DrawerCtxKey } from "./conversationDrawerShared";
 import ConversationDrawerSubagentBadge from "./ConversationDrawerSubagentBadge.vue";
 import GearIcon from "./GearIcon.vue";
 
@@ -105,9 +95,6 @@ const conversationSubagents = computed(
 );
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
-);
-const cost = computed(() =>
-  costParts(props.conversation, ctx.dayFilteredConversations.value),
 );
 
 function onSubClick(e: MouseEvent) {

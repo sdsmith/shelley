@@ -4,15 +4,15 @@
     role="group"
     aria-label="Commands"
     :data-conversation-id="conversationId"
-    :style="{ '--strip-depth': depth ?? 0 }"
+    :style="{ '--strip-depth': depth }"
   >
     <div v-if="error" class="background-jobs-error" role="alert">{{ error }}</div>
     <!-- "Loading…" stays up beside the alert while a first fetch keeps
          failing: the poller genuinely is still retrying. -->
     <div v-if="loading" class="background-jobs-empty">Loading…</div>
-    <div v-else-if="jobs.length === 0" class="background-jobs-empty">No running jobs.</div>
+    <div v-else-if="retainedJobs.length === 0" class="background-jobs-empty">No running jobs.</div>
     <details
-      v-for="job in jobs"
+      v-for="job in retainedJobs"
       :key="job.job_id"
       class="running-command"
       data-testid="background-job"
@@ -41,7 +41,7 @@
             data-testid="background-job-kill"
             :disabled="killing.has(job.job_id)"
             :aria-label="`Stop command: ${job.command}`"
-            @click="stop(conversationId, job.job_id)"
+            @click="stop({ conversationId, jobId: job.job_id })"
           >
             {{ killing.has(job.job_id) ? "Stopping…" : "Stop command" }}
           </button>
@@ -61,11 +61,19 @@ import { BackgroundJobsKey } from "../composables/backgroundJobs";
 import RunningToolTime from "./tools/RunningToolTime.vue";
 
 // One conversation's command group of the running-work strip: the strip's
-// retained `jobs` for `conversationId`, live-checked against the
+// retained commands for `conversationId`, live-checked against the
 // composable's polled group — polled commands show elapsed time and a stop
-// button, the rest read Finished. `depth` indents the group one step under
-// its owning agent's row (the open conversation's own group sits at 0).
-const props = defineProps<{ conversationId: string; jobs: BackgroundJob[]; depth?: number }>();
+// button, the rest read Finished. This must be the strip's RETENTION list
+// (finished rows kept until collapse), never the polled group's live jobs —
+// those arrive through the composable, keyed by conversationId, and the two
+// channels disagree by design. `depth` indents the group one step under its
+// owning agent's row (the open conversation's own group sits at 0); the
+// strip always knows the row's depth.
+const props = defineProps<{
+  conversationId: string;
+  retainedJobs: BackgroundJob[];
+  depth: number;
+}>();
 
 const backgroundJobs = inject(BackgroundJobsKey);
 if (!backgroundJobs) throw new Error("BackgroundJobsList requires BackgroundJobsKey");

@@ -204,18 +204,6 @@
 
       <div class="conversation-meta">
         <span class="conversation-date">{{ ctx.formatDate(conversation.updated_at) }}</span>
-        <!-- Session price, next to the date: own spend, or main/total when
-             the session has subagents. The separating slash is dimmed so
-             each price reads on its own. Hidden while there is no usage to
-             price. -->
-        <span v-if="cost" class="conversation-cost" :title="costTitle"
-          >{{ cost.main }}<span
-            v-if="cost.total"
-            class="conversation-cost-slash"
-            aria-hidden="true"
-            >/</span
-          >{{ cost.total ?? "" }}</span
-        >
         <span
           v-if="conversation.cwd && ctx.groupBy.value !== 'cwd'"
           class="conversation-cwd"
@@ -402,7 +390,6 @@ import { isImeComposing } from "../../utils/imeComposing";
 import { highlightSearchMatches } from "../../utils/searchHighlight";
 import {
   DrawerCtxKey,
-  costParts,
   parseTags,
   stripSnippetMarks,
   renderSnippetSegments,
@@ -517,19 +504,6 @@ const isActive = computed(
 const conversationSubagents = computed<ConversationWithState[]>(() =>
   isDraft.value ? [] : ctx.subagentsByParent.value[props.conversation.conversation_id] || [],
 );
-// Session price shown next to the date. With subagents the row reads
-// main/total (no labels — the tooltip spells them out); without, just the
-// session's own spend. Hidden while there is nothing to price. The rule is
-// the shared costParts helper; drafts have nothing to price.
-const cost = computed(() =>
-  isDraft.value ? null : costParts(convState.value, ctx.dayFilteredConversations.value),
-);
-const costTitle = computed(() => {
-  if (!cost.value) return "";
-  return cost.value.total
-    ? `Estimated spend — main ${cost.value.main}, ${cost.value.total} with subagents`
-    : "Estimated session cost";
-});
 // Live terminals pinned to this conversation. Badged only when > 1.
 const terminalCount = computed(
   () => ctx.terminalCounts.value[props.conversation.conversation_id] ?? 0,

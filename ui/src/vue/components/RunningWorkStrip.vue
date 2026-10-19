@@ -29,6 +29,9 @@
         </span>
       </button>
       <div v-if="itemCount > 0" class="running-work-header-actions">
+        <span v-if="stopSubagentsError" class="running-work-stop-error" role="alert">{{
+          stopSubagentsError
+        }}</span>
         <button
           type="button"
           class="running-work-stop"
@@ -67,18 +70,19 @@
         />
         <!-- A descendant's running commands render indented under their
              agent's row; the open conversation's own group sits at the
-             bottom, unindented, as today. -->
+             bottom, unindented. -->
         <BackgroundJobsList
           v-if="groupVisible(row.conversation.conversation_id)"
           :conversation-id="row.conversation.conversation_id"
-          :jobs="seenJobs.get(row.conversation.conversation_id) ?? []"
+          :retained-jobs="seenJobs.get(row.conversation.conversation_id) ?? []"
           :depth="row.depth + 1"
         />
       </template>
       <BackgroundJobsList
         v-if="groupVisible(conversationId)"
         :conversation-id="conversationId"
-        :jobs="seenJobs.get(conversationId) ?? []"
+        :retained-jobs="seenJobs.get(conversationId) ?? []"
+        :depth="0"
       />
     </div>
   </section>
@@ -92,9 +96,9 @@ import { ConversationsListKey } from "../composables/subagentLive";
 import BackgroundJobsList from "./BackgroundJobsList.vue";
 import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
-import { childrenByParent, descendantsOf, stripRows, workingDescendants } from "./conversationTree";
+import { childrenByParent, dedupeConversations, descendantsOf, stripRows, workingDescendants } from "./conversationTree";
 import { everyJobStopping } from "../composables/backgroundJobs";
-import { api } from "../../services/api";
+import { api, ApiError } from "../../services/api";
 
 const props = defineProps<{ conversationId: string }>();
 const emit = defineEmits<{ toggle: [] }>();
@@ -110,15 +114,12 @@ const open = ref(false);
 // stay visible until collapse (the agent rows' retention rule, per group).
 const seenJobs = shallowRef(new Map<string, BackgroundJob[]>());
 
-// The flat list, deduplicated last-wins by conversation_id (the drawer's
-// dayFilteredConversations applies the same rule to its pool, minus the day
-// filter: the strip shows running work regardless of the panel's selected
-// day). The module resolves residual duplicates last-wins itself;
-// pre-deduping keeps the root lookup on the same canonical copy every walk
-// sees.
-const dedupedConversations = computed(() => [
-  ...new Map(conversations.value.map((c) => [c.conversation_id, c])).values(),
-]);
+// The flat list, deduplicated last-wins by conversation_id (the module's
+// dedupe rule). The drawer's dayFilteredConversations applies the same rule
+// to its pool, minus the day filter: the strip shows running work
+// regardless of the panel's selected day. Pre-deduping keeps the root
+// lookup on the same canonical copy every walk sees.
+const dedupedConversations = computed(() => dedupeConversations(conversations.value));
 
 // One childrenByParent derivation per list version, shared by this
 // component's tree reads (the module calls that take the raw list rebuild
@@ -149,9 +150,10 @@ const jobCount = computed(() => {
 
 // Stop list: every working descendant of the open conversation at any
 // depth. The header's subagent count and "Stop subagents" both read it.
+// Reuses the shared byParent instead of rebuilding per patch.
 const stopList = computed(() =>
   rootConversation.value
-    ? workingDescendants(rootConversation.value, dedupedConversations.value)
+    ? workingDescendants(rootConversation.value, dedupedConversations.value, byParent.value)
     : [],
 );
 const runningSubagentCount = computed(() => stopList.value.length);
@@ -167,12 +169,10 @@ const conversationIdsWithJobs = computed(() => new Set(jobsByConversation.value.
 const retainedIds = ref(new Set<string>());
 const rows = computed(() =>
   rootConversation.value
-    ? stripRows(
-        props.conversationId,
-        dedupedConversations.value,
-        retainedIds.value,
-        conversationIdsWithJobs.value,
-      )
+    ? stripRows(props.conversationId, dedupedConversations.value, {
+        retained: retainedIds.value,
+        withJobs: conversationIdsWithJobs.value,
+      })
     : [],
 );
 
@@ -183,7 +183,9 @@ const itemCount = computed(() => jobCount.value + runningSubagentCount.value);
 // A single row renders directly, without the toggle header; anything more
 // starts collapsed behind the header's count (the user's toggle opens it).
 // Waiting scaffolding and retained finished rows never count toward this —
-// only running work does.
+// only running work does. Known gap, pending a product decision: a lone
+// running subagent gets no stop control in this state (the stop-all buttons
+// live in the header, and only background commands carry a per-row stop).
 const single = computed(() => itemCount.value === 1);
 
 const expanded = computed(() => single.value || open.value);
@@ -206,31 +208,43 @@ const allJobsStopping = computed(() => everyJobStopping([...jobsByConversation.v
 
 function stopAllJobs() {
   // Snapshot: a group dropped or a job finished mid-loop is caught on the
-  // next click.
+  // next click. Repeat kills are harmless no-ops: stop() returns early for
+  // a command that already has a stop in flight.
   for (const [id, group] of [...jobsByConversation.value]) {
-    for (const job of group.jobs ?? []) void stopJob(id, job.job_id);
+    for (const job of group.jobs ?? []) void stopJob({ conversationId: id, jobId: job.job_id });
   }
 }
+
+// The strip-level stop failure line: set when a subagent cancel fails for a
+// reason other than the subagent having already finished (404 — the cancel
+// had nothing left to stop). Cleared by the next stop-all click.
+const stopSubagentsError = ref("");
 
 const stoppingSubagents = ref(false);
 function stopAllSubagents() {
   if (stoppingSubagents.value) return;
   stoppingSubagents.value = true;
+  stopSubagentsError.value = "";
   void (async () => {
+    let failed = "";
     for (const sub of [...stopList.value]) {
       try {
         await api.cancelConversation(sub.conversation_id);
       } catch (e) {
-        // A failed cancel — typically a lost race with a finishing
-        // subagent — must not stop the rest; the error is deliberately
-        // swallowed beyond this warning (the polled list keeps the rows
-        // truthful either way).
-        console.warn(
-          `cancel failed for ${sub.conversation_id}: ${e instanceof Error ? e.message : e}`,
-        );
+        // A lost race with a finishing subagent (its row is gone) is
+        // success — the cancel had nothing left to stop — and must not
+        // stop the loop. Any other failure also must not stop the rest,
+        // but is surfaced: the rows would keep reading "running" with no
+        // signal that a cancel was attempted and dropped.
+        if (e instanceof ApiError && e.status === 404) continue;
+        failed = `Cancel failed for ${sub.conversation_id}: ${
+          e instanceof Error ? e.message : e
+        }`;
+        console.warn(failed);
       }
     }
     stoppingSubagents.value = false;
+    stopSubagentsError.value = failed;
   })();
 }
 
@@ -247,13 +261,20 @@ function remember<T>(seen: readonly T[], current: readonly T[], key: (item: T) =
 
 // Retention update: while expanded, every shown row id joins the retained
 // set, and every polled group's live commands merge into that
-// conversation's seen list; collapsing clears both. The size comparison
-// skips no-op writes — next is a superset of the current set, so equal size
-// means nothing new — which is also what stops the rows↔retention loop
-// (rows read the retained set this watcher writes). `immediate` matters:
-// mounted mid-run (reload with work already going), `expanded` is true from
-// the first evaluation and would otherwise never fire, leaving the header
-// counting rows it never renders.
+// conversation's seen list; collapsing clears both. The retained-set size
+// comparison is load-bearing: nextIds is always a SUPERSET of the current
+// set (rows only ever add ids here, never remove), so equal size means
+// equal content and the write is skipped. Skipping it is what stops the
+// rows↔retention render loop — rows read the retained set this watcher
+// writes, so a fresh set identity on every fire would re-render rows,
+// refire the watcher, and loop forever. A future change that removes ids
+// from the set breaks the superset property (equal size would no longer
+// imply equal content) and silently drops rows; compare contents instead.
+// The seenJobs write takes a fresh map every fire and is safe from the loop
+// for the same reason from the other side: rows does not read seenJobs.
+// `immediate` matters: mounted mid-run (reload with work already going),
+// `expanded` is true from the first evaluation and would otherwise never
+// fire, leaving the header counting rows it never renders.
 watch(
   [expanded, rows, jobsByConversation],
   ([isExpanded, currentRows, liveGroups]) => {
@@ -375,6 +396,13 @@ watch(
 .running-work-stop:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.running-work-stop-error {
+  flex-basis: 100%;
+  padding: 0 12px 6px;
+  color: var(--error-text);
+  font-size: var(--font-size-12);
 }
 
 .running-work-items {

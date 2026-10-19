@@ -592,7 +592,7 @@ import Button from "primevue/button";
 import DatePicker from "primevue/datepicker";
 import Popover from "primevue/popover";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
-import { ancestorChain } from "./conversationTree";
+import { ancestorChain, dedupeConversations } from "./conversationTree";
 import type { EphemeralTerminal } from "./terminalTypes";
 import {
   UNTAGGED_TERM,
@@ -941,16 +941,15 @@ watch(
 );
 
 // The flat list the tree math reads: day-filtered, deduplicated last-wins
-// (the module's contract for a repeated conversation id), and the exact pool
-// subagentsByParent buckets — badge numbers and rendered rows read one list.
-const dayFilteredConversations = computed(() => {
-  const byId = new Map(
-    filterConversationsByDay(props.conversations, selectedDay.value).map(
-      (c) => [c.conversation_id, c],
-    ),
-  );
-  return [...byId.values()];
-});
+// (the module's dedupeConversations rule) — the pool subagentsByParent
+// buckets from. Badge numbers and rendered rows read one list. The day
+// filter is deliberate: badge numbers and rows agree here even though the
+// running-work strip (which reads the unfiltered list) can show a tree this
+// view filters out — a spawn tree spanning days splits across day views by
+// design.
+const dayFilteredConversations = computed(() =>
+  dedupeConversations(filterConversationsByDay(props.conversations, selectedDay.value)),
+);
 
 // Bucket subagents under their parent.
 const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() => {

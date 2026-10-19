@@ -1,17 +1,17 @@
 <!-- The "subagents" badge on a drawer row: the count pair, the (ΣZ) suffix
      when the tree extends past the direct children, the working ring (lit
-     while ANY descendant at any depth works — distinct from the row's own
-     ring, which means "this agent's turn is open"), and the expand/collapse
+     while any descendant at any depth works — see anyDescendantWorking's doc
+     for how that differs from the row's own ring), and the expand/collapse
      chevron. Numbers and rendering flags come from the conversationTree
      module's subagentBadge (its doc is the contract for what renders);
      collapse semantics (whole subtree, per-entry persistence) live in the
-     shared expanded set. Renders nothing for entries without subagents.
-     Callers must not render this for draft or archived entries — those
-     gates live at the call sites (subrows can never be either). Used by
-     top-level rows and, recursively, by nested subagent rows. -->
+     shared expanded set. Self-guards: renders nothing for entries without
+     subagents, and nothing for draft or archived entries (top-level-only
+     states) even if a caller passes one. Used by top-level rows and,
+     recursively, by nested subagent rows. -->
 <template>
   <button
-    v-if="hasChildren"
+    v-if="renders"
     type="button"
     class="subagent-count-badge"
     v-tooltip.top="tooltip"
@@ -45,7 +45,7 @@
 import { computed, inject } from "vue";
 import type { ConversationWithState } from "../../types";
 import { DrawerCtxKey } from "./conversationDrawerShared";
-import { anyDescendantWorking, subagentBadge } from "./conversationTree";
+import { anyDescendantWorking, childrenByParent, subagentBadge } from "./conversationTree";
 
 const props = defineProps<{
   conversation: ConversationWithState;
@@ -53,13 +53,23 @@ const props = defineProps<{
 
 const ctx = inject(DrawerCtxKey)!;
 
+// One childrenByParent build per list version, shared by the badge numbers
+// and the ring below (the module's helpers rebuild per call unless handed a
+// prebuilt map).
+const byParent = computed(() => childrenByParent(ctx.dayFilteredConversations.value));
+
 const badge = computed(() =>
-  subagentBadge(props.conversation, ctx.dayFilteredConversations.value),
+  subagentBadge(props.conversation, ctx.dayFilteredConversations.value, byParent.value),
 );
 const hasChildren = computed(() => badge.value.launched > 0);
 
 const descendantWorking = computed(() =>
-  anyDescendantWorking(props.conversation, ctx.dayFilteredConversations.value),
+  anyDescendantWorking(props.conversation, ctx.dayFilteredConversations.value, byParent.value),
+);
+// Draft/archived entries carry no spawn tree (both states are top-level
+// row concerns); the guard keeps a stray call site silent.
+const renders = computed(
+  () => hasChildren.value && !props.conversation.is_draft && !props.conversation.archived,
 );
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
