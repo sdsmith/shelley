@@ -241,6 +241,28 @@ test("stop() kills through the owning conversation; a failure lands on that grou
   assert.equal(h.jobsByConversation.value.get("root")?.error, "", "the root's group untouched");
 });
 
+test("stop() twice with no intervening poll sends exactly one kill", async (t) => {
+  jobsByConv = new Map([["root", [job("jr")]]]);
+  kills = [];
+  failKills = [];
+  failGets = new Set();
+  gets = [];
+  const h = harness(t, [conv("root", null, 1)]);
+  await drain();
+
+  assert.equal(await h.stop({ conversationId: "root", jobId: "jr" }), true);
+  assert.equal(
+    await h.stop({ conversationId: "root", jobId: "jr" }),
+    true,
+    "a stop already in flight still returns true",
+  );
+  assert.deepEqual(
+    kills,
+    [{ conversationId: "root", jobId: "jr" }],
+    "the second stop early-returns on the in-flight marker instead of re-sending the kill",
+  );
+});
+
 test("a running-count bump refetches the conversation's commands immediately", async (t) => {
   jobsByConv = new Map([
     ["root", [job("jr1")]],

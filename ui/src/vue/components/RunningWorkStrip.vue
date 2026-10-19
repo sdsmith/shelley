@@ -98,7 +98,8 @@ import RunningWorkAgent from "./RunningWorkAgent.vue";
 import ToolChevron from "./tools/ToolChevron.vue";
 import { childrenByParent, dedupeConversations, descendantsOf, stripRows, workingDescendants } from "./conversationTree";
 import { everyJobStopping } from "../composables/backgroundJobs";
-import { api, ApiError } from "../../services/api";
+import { api } from "../../services/api";
+import { isBenignCancelFailure, stopFailureMessage } from "./stopSubagents";
 
 const props = defineProps<{ conversationId: string }>();
 const emit = defineEmits<{ toggle: [] }>();
@@ -172,6 +173,7 @@ const rows = computed(() =>
     ? stripRows(props.conversationId, dedupedConversations.value, {
         retained: retainedIds.value,
         withJobs: conversationIdsWithJobs.value,
+        byParent: byParent.value,
       })
     : [],
 );
@@ -215,36 +217,52 @@ function stopAllJobs() {
   }
 }
 
-// The strip-level stop failure line: set when a subagent cancel fails for a
-// reason other than the subagent having already finished (404 — the cancel
-// had nothing left to stop). Cleared by the next stop-all click.
-const stopSubagentsError = ref("");
+// The strip-level stop failure line: the summary of a sweep whose cancels
+// failed (isBenignCancelFailure's benign 404s excepted), held together with
+// the ids it names. Self-clearing — rendered only while a failed sweep
+// still has a subject on the stop list — so a stale failure cannot resurface
+// with the header after its subjects are gone.
+const stopSubagentsFailure = ref<{ ids: readonly string[]; message: string } | null>(null);
+const stopSubagentsError = computed(() =>
+  stopSubagentsFailure.value?.ids.some((id) =>
+    stopList.value.some((sub) => sub.conversation_id === id),
+  )
+    ? stopSubagentsFailure.value.message
+    : "",
+);
 
 const stoppingSubagents = ref(false);
 function stopAllSubagents() {
   if (stoppingSubagents.value) return;
   stoppingSubagents.value = true;
-  stopSubagentsError.value = "";
+  stopSubagentsFailure.value = null;
   void (async () => {
-    let failed = "";
-    for (const sub of [...stopList.value]) {
+    const swept = [...stopList.value];
+    const failedIds: string[] = [];
+    for (const sub of swept) {
       try {
         await api.cancelConversation(sub.conversation_id);
       } catch (e) {
-        // A lost race with a finishing subagent (its row is gone) is
-        // success — the cancel had nothing left to stop — and must not
-        // stop the loop. Any other failure also must not stop the rest,
-        // but is surfaced: the rows would keep reading "running" with no
-        // signal that a cancel was attempted and dropped.
-        if (e instanceof ApiError && e.status === 404) continue;
-        failed = `Cancel failed for ${sub.conversation_id}: ${
-          e instanceof Error ? e.message : e
-        }`;
-        console.warn(failed);
+        // Benign cancels must not stop the loop: a subagent that merely
+        // finished never lands in this catch at all — its row persists, so
+        // the endpoint answers 200 with `no_active_conversation`
+        // (server/handlers.go) — and a 404 names a row that is deleted or
+        // unknown, with nothing left to cancel (isBenignCancelFailure).
+        // Any other failure also must not stop the rest, but is surfaced:
+        // the rows would keep reading "running" with no signal that a
+        // cancel was attempted and dropped.
+        if (isBenignCancelFailure(e)) continue;
+        const reason = `${sub.conversation_id}: ${e instanceof Error ? e.message : e}`;
+        console.warn(`Cancel failed for ${reason}`);
+        failedIds.push(sub.conversation_id);
       }
     }
     stoppingSubagents.value = false;
-    stopSubagentsError.value = failed;
+    if (failedIds.length > 0)
+      stopSubagentsFailure.value = {
+        ids: failedIds,
+        message: stopFailureMessage(failedIds, swept.length),
+      };
   })();
 }
 
@@ -371,6 +389,7 @@ watch(
 
 .running-work-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;

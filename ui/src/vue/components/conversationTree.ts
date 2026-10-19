@@ -13,12 +13,15 @@ export interface ListedConversation {
   parent_conversation_id: string | null;
   working: boolean;
   // Must be ISO-8601-parseable: an unparseable value makes every function
-  // in this module throw rather than silently mis-order the tree. Validate
-  // patch data before it reaches here — this module crashes on bad input
-  // by design.
+  // in this module throw rather than silently mis-order the tree — for any
+  // conversation that survives the last-wins dedupe (a shadowed duplicate
+  // is never read, so its bad timestamp goes unvalidated). Validate patch
+  // data before it reaches here — this module crashes on bad input by
+  // design.
   created_at: string;
-  // The server's direct-children count. M falls back to it when the
-  // in-memory list holds none of the conversation's children.
+  // The server's direct-children count. subagentBadge's `launched` count
+  // falls back to it when the in-memory list holds none of the
+  // conversation's children.
   subagent_count: number;
 }
 
@@ -55,7 +58,9 @@ export function dedupeConversations<T extends ListedConversation>(
 // holds only entries that have children in the given list. Duplicate ids in
 // the list resolve last-wins (dedupeConversations), so a duplicated
 // conversation is attributed to one parent only. Throws on an unparseable
-// created_at anywhere in `convs` (see ListedConversation.created_at).
+// created_at in any conversation that survives the last-wins dedupe — a
+// shadowed duplicate's bad timestamp is never read (see
+// ListedConversation.created_at).
 export function childrenByParent<T extends ListedConversation>(
   convs: readonly T[],
 ): Map<string, T[]> {
@@ -106,11 +111,15 @@ export function descendantsOf<T extends ListedConversation>(
 // Rendering rules carried alongside the numbers: the N/M pair hides when
 // N = 0 (even while a deeper descendant runs — the badge ring carries that
 // signal), and the (ΣZ) suffix renders only when Z > M.
-// Throws on an unparseable created_at anywhere in `convs` (see
-// ListedConversation.created_at). Callers reading several conversations per
-// list version should pass one prebuilt `childrenByParent` map as `byParent`
-// instead of letting each call rebuild it (the badge and its ring share one
-// build this way).
+// Throws on an unparseable created_at in any conversation that survives the
+// last-wins dedupe (see ListedConversation.created_at); validation happens
+// while building `byParent`, so with a prebuilt map the throw surfaced
+// there. Callers reading several conversations per list version should pass
+// one prebuilt `childrenByParent` map as `byParent` instead of letting each
+// call rebuild it (the badge and its ring share one build this way). A
+// prebuilt `byParent` must be built from the same `convs` list — the map
+// defines what the helpers see, so a map from another pool (say, the full
+// list against a day-filtered list) silently counts children outside it.
 export interface SubagentBadge {
   running: number;
   launched: number;
@@ -142,7 +151,9 @@ export function subagentBadge<T extends ListedConversation>(
 // open" — the conversation's own `working` flag): subagents run detached,
 // so a parent's turn typically ends while its descendants work, and the
 // two rings can light at once. Throws on an unparseable created_at in
-// `convs`; takes a prebuilt map like subagentBadge does.
+// `convs` (the dedupe-surviving set — see childrenByParent); takes a
+// prebuilt map like subagentBadge does — it must be built from the same
+// `convs` list.
 export function anyDescendantWorking<T extends ListedConversation>(
   conv: T,
   convs: readonly T[],
@@ -179,8 +190,9 @@ export function ancestorChain<T extends ListedConversation>(
 // count is this list's length). Tree order; the conversation itself is not
 // its own descendant. Duplicate ids in the list resolve last-wins —
 // childrenByParent's rule — so a duplicated conversation is attributed
-// once. Throws on an unparseable created_at in `convs`; takes a prebuilt
-// map like subagentBadge does.
+// once. Throws on an unparseable created_at in `convs` (the
+// dedupe-surviving set — see childrenByParent); takes a prebuilt map like
+// subagentBadge does — it must be built from the same `convs` list.
 export function workingDescendants<T extends ListedConversation>(
   conv: T,
   convs: readonly T[],
@@ -209,7 +221,9 @@ export function workingDescendants<T extends ListedConversation>(
 // ancestor of an active descendant renders as "Waiting" even if it is
 // itself retained, and a retained row only reads "Finished" once nothing
 // below it — including descendants' commands — runs. Throws on an
-// unparseable created_at in `convs`.
+// unparseable created_at in `convs` (the dedupe-surviving set — see
+// childrenByParent); with a prebuilt `options.byParent` the throw surfaced
+// when that map was built.
 export type StripRowState = "running" | "waiting" | "finished";
 
 export interface StripRow<T extends ListedConversation = ListedConversation> {
@@ -221,11 +235,17 @@ export interface StripRow<T extends ListedConversation = ListedConversation> {
 export function stripRows<T extends ListedConversation>(
   rootId: string,
   convs: readonly T[],
-  options: { retained?: ReadonlySet<string>; withJobs?: ReadonlySet<string> } = {},
+  options: {
+    retained?: ReadonlySet<string>;
+    withJobs?: ReadonlySet<string>;
+    // Optional prebuilt childrenByParent map, built from the same `convs`
+    // list, for callers that already hold one.
+    byParent?: Map<string, T[]>;
+  } = {},
 ): StripRow<T>[] {
   const retainedIds = options.retained ?? new Set<string>();
   const conversationIdsWithJobs = options.withJobs ?? new Set<string>();
-  const byParent = childrenByParent(convs);
+  const byParent = options.byParent ?? childrenByParent(convs);
   const isShown = (c: T): boolean =>
     c.working || retainedIds.has(c.conversation_id) || conversationIdsWithJobs.has(c.conversation_id);
 
