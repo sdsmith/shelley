@@ -1,5 +1,16 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
 import { createConversationViaAPIWithDetails } from "./helpers";
+
+// Stop every running background job on the conversation so a failed run
+// does not leave sleep jobs on the shared server (page.route only
+// intercepts the page's own requests, so this goes through the request
+// context).
+async function stopAllJobs(request: APIRequestContext, conversationId: string) {
+  const jobs = await (await request.get(`/api/conversation/${conversationId}/background-jobs`)).json();
+  for (const { job_id: jobId } of jobs ?? []) {
+    await request.post(`/api/conversation/${conversationId}/background-jobs/${jobId}/kill`);
+  }
+}
 
 test("running work exposes live output in native details and stops the command", async ({
   page,
@@ -9,10 +20,11 @@ test("running work exposes live output in native details and stops the command",
     request,
     "bash-bg: echo ready; sleep 600",
   );
-  await page.goto(`/c/${slug}`);
-  await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+  try {
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
 
-  const running = page.getByTestId("bash-tool-running-indicator");
+    const running = page.getByTestId("bash-tool-running-indicator");
   await expect(running).toBeVisible({ timeout: 15000 });
   const jobsResponse = await request.get(`/api/conversation/${conversationId}/background-jobs`);
   expect(jobsResponse.ok()).toBeTruthy();
@@ -88,9 +100,12 @@ test("running work exposes live output in native details and stops the command",
   );
   await expect(card.locator(".bash-tool-details")).toHaveCount(0);
   await card.getByRole("button", { name: "Expand" }).click();
-  await expect(card.locator(".bash-tool-code").first()).toHaveText("echo ready; sleep 600");
-  await expect(card.locator(".bash-tool-label").last()).toHaveText("Output:");
-  await expect(card).not.toContainText(jobId);
+    await expect(card.locator(".bash-tool-code").first()).toHaveText("echo ready; sleep 600");
+    await expect(card.locator(".bash-tool-label").last()).toHaveText("Output:");
+    await expect(card).not.toContainText(jobId);
+  } finally {
+    await stopAllJobs(request, conversationId);
+  }
 });
 
 test("stops every command from the header at once", async ({ page, request }) => {
@@ -98,30 +113,34 @@ test("stops every command from the header at once", async ({ page, request }) =>
     request,
     "bash-bg: echo ready; sleep 600",
   );
-  await page.goto(`/c/${slug}`);
-  await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
-  expect(
-    (
-      await request.post(`/api/conversation/${conversationId}/chat`, {
-        data: { message: "bash-bg: sleep 601", model: "predictable" },
-      })
-    ).ok(),
-  ).toBe(true);
+  try {
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+    expect(
+      (
+        await request.post(`/api/conversation/${conversationId}/chat`, {
+          data: { message: "bash-bg: sleep 601", model: "predictable" },
+        })
+      ).ok(),
+    ).toBe(true);
 
-  const strip = page.getByLabel("Running work", { exact: true });
-  await expect(strip.getByTestId("running-work-toggle")).toContainText("2 tasks", {
-    timeout: 15000,
-  });
-  await expect(strip.getByTestId("running-work-stop-jobs")).toBeEnabled();
-  // No subagents are running, so that button is greyed out.
-  await expect(strip.getByTestId("running-work-stop-subagents")).toBeDisabled();
+    const strip = page.getByLabel("Running work", { exact: true });
+    await expect(strip.getByTestId("running-work-toggle")).toContainText("2 tasks", {
+      timeout: 15000,
+    });
+    await expect(strip.getByTestId("running-work-stop-jobs")).toBeEnabled();
+    // No subagents are running, so that button is greyed out.
+    await expect(strip.getByTestId("running-work-stop-subagents")).toBeDisabled();
 
-  await strip.getByTestId("running-work-stop-jobs").click();
-  // Nothing runs any more, so the strip hides itself and both finish
-  // notices land in chat.
-  await expect(strip).toHaveCount(0, { timeout: 15000 });
-  await expect(page.getByTestId("bash-tool-finished-job")).toHaveCount(2, { timeout: 15000 });
-  await expect(page.getByTestId("bash-tool-finished-job").first()).toHaveText("Failed");
+    await strip.getByTestId("running-work-stop-jobs").click();
+    // Nothing runs any more, so the strip hides itself and both finish
+    // notices land in chat.
+    await expect(strip).toHaveCount(0, { timeout: 15000 });
+    await expect(page.getByTestId("bash-tool-finished-job")).toHaveCount(2, { timeout: 15000 });
+    await expect(page.getByTestId("bash-tool-finished-job").first()).toHaveText("Failed");
+  } finally {
+    await stopAllJobs(request, conversationId);
+  }
 });
 
 test("a failed kill doesn't abort the header's remaining stops", async ({ page, request }) => {
@@ -167,14 +186,7 @@ test("a failed kill doesn't abort the header's remaining stops", async ({ page, 
         .locator(".running-command-time"),
     ).toContainText("Running");
   } finally {
-    // Stop the survivors so a failed run does not leave them on the shared
-    // server (page.route only intercepts the page's own requests).
-    const jobs = await (
-      await request.get(`/api/conversation/${conversationId}/background-jobs`)
-    ).json();
-    for (const { job_id: jobId } of jobs ?? []) {
-      await request.post(`/api/conversation/${conversationId}/background-jobs/${jobId}/kill`);
-    }
+    await stopAllJobs(request, conversationId);
   }
 });
 

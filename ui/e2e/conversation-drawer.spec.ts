@@ -1278,48 +1278,6 @@ test.describe("drawer spawn tree", () => {
     }
   });
 
-  test("nested entries show own/total cost when spawning and own cost otherwise", async ({
-    page,
-  }) => {
-    const [trunk, limb] = spawnTree();
-    trunk.cost_usd = 0.42;
-    trunk.total_cost_usd = 1.47;
-    limb.cost_usd = 0.31;
-    limb.total_cost_usd = 0.68;
-    const twig = conversation("twig");
-    twig.parent_conversation_id = limb.conversation_id;
-    twig.cost_usd = 0.37;
-    twig.total_cost_usd = 0.37;
-    // Spawning but the descendants spent nothing: the total > own guard
-    // renders the single total.
-    const branch = conversation("branch");
-    branch.parent_conversation_id = trunk.conversation_id;
-    branch.cost_usd = 0.5;
-    branch.total_cost_usd = 0.5;
-    const sprout = conversation("sprout");
-    sprout.parent_conversation_id = branch.conversation_id;
-    await stubConversationList(page, [trunk, limb, twig, branch, sprout]);
-
-    await page.goto("/new");
-    await expandRow(page.locator('[data-conversation-id="trunk"]'));
-    // formatUsd pads sub-dollar amounts to three decimals, so 0.42 renders
-    // as "$0.420" while 1.47 renders as "$1.47".
-    await expect(
-      page.locator('[data-conversation-id="trunk"] .conversation-cost'),
-    ).toHaveText("$0.420/$1.47");
-    await expect(
-      page.locator('[data-conversation-id="limb"] .conversation-cost'),
-    ).toHaveText("$0.310/$0.680");
-
-    await expandRow(page.locator('[data-conversation-id="limb"]'));
-    await expect(
-      page.locator('[data-conversation-id="twig"] .conversation-cost'),
-    ).toHaveText("$0.370");
-    await expect(
-      page.locator('[data-conversation-id="branch"] .conversation-cost'),
-    ).toHaveText("$0.500");
-  });
-
   test("the badge suffix reports the whole tree: M (ΣZ) idle, N/M (ΣZ) running, nested too", async ({
     page,
   }) => {

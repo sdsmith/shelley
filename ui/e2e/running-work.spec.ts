@@ -508,7 +508,7 @@ test.describe("running work", () => {
     }
   });
 
-  test("starts collapsed with the count once there are more than four tasks", async ({
+  test("starts collapsed with the count at five running tasks", async ({
     page,
     request,
   }) => {
@@ -538,7 +538,9 @@ test.describe("running work", () => {
       await page.goto(`/c/${slug}`);
       const strip = page.getByLabel("Running work", { exact: true });
       const toggle = strip.getByTestId("running-work-toggle");
-      // More than four tasks: collapsed by default, count in the header.
+      // Five running tasks: collapsed by default, count in the header. The
+      // boundary itself is "more than one" — pinned at two tasks in
+      // background-jobs.spec.ts; this pins a larger count at the same rule.
       await expect(toggle).toContainText("5 tasks", { timeout: 30000 });
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(strip.getByTestId("running-work-items")).toHaveCount(0);
