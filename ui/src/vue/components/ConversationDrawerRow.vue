@@ -364,6 +364,7 @@
       v-for="sub in conversationSubagents"
       :key="sub.conversation_id"
       :conversation="sub"
+      :ancestor-ids="subrowAncestorIds"
     />
   </div>
 </template>
@@ -504,6 +505,10 @@ const isActive = computed(
 const conversationSubagents = computed<ConversationWithState[]>(() =>
   isDraft.value ? [] : ctx.subagentsByParent.value[props.conversation.conversation_id] || [],
 );
+// The subrows' ancestor set starts at this row: each child's parent chain
+// begins here (ConversationDrawerSubrow guards corrupt parent cycles with
+// it).
+const subrowAncestorIds = computed(() => new Set([props.conversation.conversation_id]));
 // Live terminals pinned to this conversation. Badged only when > 1.
 const terminalCount = computed(
   () => ctx.terminalCounts.value[props.conversation.conversation_id] ?? 0,

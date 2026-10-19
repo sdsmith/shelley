@@ -1,9 +1,13 @@
 <!-- Recursive row for a subagent conversation in the drawer's spawn tree.
      Renders the subagent markup (title, own working ring, preview, and a
-     meta line: date, running-jobs gear, cost, tree-aware subagent badge).
+     meta line: date, running-jobs gear, tree-aware subagent badge).
      An expanded entry renders its own nested list of these rows beneath it,
      so indent grows one level per depth with no hardcoded cap (the server
-     caps nesting; the rendering is deliberately depth-agnostic). Multiple
+     caps nesting; the rendering is deliberately depth-agnostic). Each row
+     carries `ancestorIds` — the ids above it — and a row whose own id is
+     already among its ancestors renders nothing: a corrupt list that makes
+     a conversation its own descendant must not recurse forever (matching
+     conversationTree's cycle guards). Multiple
      root nodes so the row renders inline inside its parent's
      .subagent-list with no wrapper element — CONSEQUENCE: attribute
      fallthrough does not apply (Vue drops attrs on multi-root components),
@@ -15,6 +19,7 @@
      apply here. -->
 <template>
   <div
+    v-if="!cycle"
     :class="`conversation-item subagent-item drawer-subagent-item-style ${isActive ? 'active' : ''}${isNew ? ' conversation-item-enter' : ''}`"
     :data-conversation-id="conversation.conversation_id"
     @click="onSubClick"
@@ -58,13 +63,14 @@
 
   <!-- Nested spawn tree: this entry's own subagents, recursively. -->
   <div
-    v-if="isExpanded && conversationSubagents.length > 0"
+    v-if="!cycle && isExpanded && conversationSubagents.length > 0"
     class="subagent-list drawer-subagent-list"
   >
     <ConversationDrawerSubrow
       v-for="sub in conversationSubagents"
       :key="sub.conversation_id"
       :conversation="sub"
+      :ancestor-ids="childAncestorIds"
     />
   </div>
 </template>
@@ -78,9 +84,24 @@ import GearIcon from "./GearIcon.vue";
 
 const props = defineProps<{
   conversation: ConversationWithState;
+  // The ids of the rows above this one (its parent chain up to the
+  // top-level row). A row whose own id is already among its ancestors is
+  // corrupt data (a parent cycle) and renders nothing instead of recursing
+  // into itself forever — the render-side match of conversationTree's
+  // cycle guards.
+  ancestorIds: ReadonlySet<string>;
 }>();
 
 const ctx = inject(DrawerCtxKey)!;
+
+// This row is its own ancestor: corrupt parent data, skip the whole row.
+const cycle = computed(() => props.ancestorIds.has(props.conversation.conversation_id));
+// The nested rows' ancestor set: everything above this row plus this row.
+const childAncestorIds = computed(() => {
+  const next = new Set(props.ancestorIds);
+  next.add(props.conversation.conversation_id);
+  return next;
+});
 
 const isActive = computed(
   () => props.conversation.conversation_id === ctx.currentConversationId.value,
