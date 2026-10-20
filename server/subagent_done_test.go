@@ -256,6 +256,29 @@ func requestWithText(t *testing.T, ps *predictable.Service, text string) *llm.Re
 	return nil
 }
 
+// runDelegatedTurn delegates prompt to the subagent conversation and waits
+// for its single agent turn to finish.
+func runDelegatedTurn(t *testing.T, server *Server, database *db.DB, conversationID, prompt string) {
+	t.Helper()
+	if _, err := NewSubagentRunner(server).RunSubagent(t.Context(), conversationID, prompt, "predictable", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, func() bool {
+		return countByType(listMessages(t, database, conversationID), db.MessageTypeAgent) == 1 && !server.IsAgentWorking(conversationID)
+	})
+}
+
+// requestTools returns the tool names offered in the most recent request
+// whose messages contain text.
+func requestTools(t *testing.T, ps *predictable.Service, text string) map[string]bool {
+	t.Helper()
+	tools := map[string]bool{}
+	for _, tool := range requestWithText(t, ps, text).Tools {
+		tools[tool.Name] = true
+	}
+	return tools
+}
+
 // A subagent whose manager was first loaded by something other than the
 // subagent tool (the user opening it, a background job notice, reload after
 // eviction) is still a subagent: it cannot spawn subagents, and it can
@@ -278,16 +301,8 @@ func TestSubagentLoadedOutsideSubagentToolKeepsItsRole(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := NewSubagentRunner(server).RunSubagent(ctx, sub.ConversationID, "echo: delegated work", "predictable", ""); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, 15*time.Second, func() bool {
-		return countByType(listMessages(t, database, sub.ConversationID), db.MessageTypeAgent) == 1 && !server.IsAgentWorking(sub.ConversationID)
-	})
-	tools := map[string]bool{}
-	for _, tool := range requestWithText(t, ps, "echo: delegated work").Tools {
-		tools[tool.Name] = true
-	}
+	runDelegatedTurn(t, server, database, sub.ConversationID, "echo: delegated work")
+	tools := requestTools(t, ps, "echo: delegated work")
 	if tools["subagent"] {
 		t.Error("subagent was offered the subagent tool")
 	}
@@ -324,12 +339,7 @@ func TestSubagentSystemPromptAsksForMessageParent(t *testing.T) {
 		{sub.ConversationID, "echo: subagent work", true},
 		{worker.ConversationID, "echo: worker work", false},
 	} {
-		if _, err := NewSubagentRunner(server).RunSubagent(ctx, tc.id, tc.prompt, "predictable", ""); err != nil {
-			t.Fatal(err)
-		}
-		waitFor(t, 15*time.Second, func() bool {
-			return countByType(listMessages(t, database, tc.id), db.MessageTypeAgent) == 1 && !server.IsAgentWorking(tc.id)
-		})
+		runDelegatedTurn(t, server, database, tc.id, tc.prompt)
 		var system strings.Builder
 		for _, s := range requestWithText(t, ps, tc.prompt).System {
 			system.WriteString(s.Text)

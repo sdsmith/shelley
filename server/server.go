@@ -515,7 +515,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	s.toolSetConfig.ParentMessenger = subagentRunner
 	s.toolSetConfig.DBPath = DBPath
 	s.toolSetConfig.BackgroundJobs = backgroundJobs{server: s}
-	s.toolSetConfig.MaxSubagentDepth = 2 // subagents may spawn one level of subagents, no deeper
+	s.toolSetConfig.MaxSubagentDepth = 3 // subagents may spawn up to two levels of subagents, no deeper
 
 	return s
 }

@@ -184,6 +184,10 @@ Nothing is upstreamed from here; all customizations live on this fork's
   level of subagents (e.g. an `/execute-tasks` task agent fanning out to
   `/mongo-code-review` specialists), no deeper. `MaxSubagentDepth` gates the
   tool by hops walked up the parent chain.
+- `custom: allow two levels of subagent nesting` — raises the shipped
+  `MaxSubagentDepth` to 3, so a depth-2 subagent (e.g. a `/mongo-code-review`
+  specialist) can fan out to its own helpers; depth-3 is where spawning
+  stops.
 - `test: read client2's SSE replay to completion` — the fork-only test
   robustness fix above.
 - `ui: running-work strip renders one task directly, collapses the rest` —

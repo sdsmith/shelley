@@ -196,7 +196,8 @@ run("badge: the N/M pair hides when N = 0, even while a deeper descendant runs",
 });
 
 run("badge: Z counts descendants at every depth (depth-agnostic)", () => {
-  // The server caps nesting at 2, but the module is deliberately recursive.
+  // The module is deliberately recursive; it must stay correct at whatever
+  // depth the server's nesting cap allows.
   const list = [
     conv("top", null),
     conv("c1", "top"),
