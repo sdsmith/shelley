@@ -832,9 +832,12 @@ func TestExtractBody(t *testing.T) {
 }
 
 func TestFindByNameBuiltin(t *testing.T) {
-	content, err := FindByName("schedule", t.TempDir())
+	skill, content, err := FindByName("schedule", t.TempDir())
 	if err != nil {
 		t.Fatalf("FindByName(schedule): %v", err)
+	}
+	if skill.Path != "" {
+		t.Errorf("built-in skill Path = %q, want empty", skill.Path)
 	}
 	if !strings.Contains(content, "name: schedule") {
 		t.Error("expected content to contain frontmatter")
@@ -845,9 +848,81 @@ func TestFindByNameBuiltin(t *testing.T) {
 }
 
 func TestFindByNameNotFound(t *testing.T) {
-	_, err := FindByName("nonexistent-skill", t.TempDir())
+	_, _, err := FindByName("nonexistent-skill", t.TempDir())
 	if err == nil {
 		t.Error("expected error for nonexistent skill")
+	}
+}
+
+func TestFindByNameAbsolutePath(t *testing.T) {
+	// A relative working directory must still yield an absolute skill Path
+	// (tree discovery resolves relative paths), so the directory line
+	// FindByName feeds is always absolute.
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, "my-fs-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-fs-skill\ndescription: A filesystem skill.\n---\n\nFS instructions.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make tmpHome a git root so tree discovery walks from the relative cwd.
+	if err := os.Mkdir(filepath.Join(tmpHome, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmpHome); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(oldWd) })
+
+	skill, _, err := FindByName("my-fs-skill", ".")
+	if err != nil {
+		t.Fatalf("FindByName(my-fs-skill): %v", err)
+	}
+	if !filepath.IsAbs(skill.Path) {
+		t.Errorf("skill.Path = %q, want absolute", skill.Path)
+	}
+}
+
+func TestToCatOutputFilesystem(t *testing.T) {
+	// Create a filesystem skill with no sibling files — the directory line
+	// is a uniform rule, so it must still appear.
+	tmpHome := t.TempDir()
+	skillDir := filepath.Join(tmpHome, ".config", "shelley", "my-fs-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillContent := "---\nname: my-fs-skill\ndescription: A filesystem skill.\n---\n\nFS instructions.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpHome)
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	skill, content, err := FindByName("my-fs-skill", t.TempDir())
+	if err != nil {
+		t.Fatalf("FindByName(my-fs-skill): %v", err)
+	}
+
+	out := ToCatOutput(skill, content)
+	wantDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := fmt.Sprintf("<!-- skill directory: %s — resolve this skill's relative references against this directory -->\n", wantDir)
+	if out != wantLine+skillContent {
+		t.Errorf("ToCatOutput = %q, want %q", out, wantLine+skillContent)
 	}
 }
 
@@ -867,12 +942,40 @@ func TestFindByNameFilesystem(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
 
-	content, err := FindByName("my-fs-skill", t.TempDir())
+	skill, content, err := FindByName("my-fs-skill", t.TempDir())
 	if err != nil {
 		t.Fatalf("FindByName(my-fs-skill): %v", err)
 	}
 	if !strings.Contains(content, "FS instructions") {
 		t.Error("expected filesystem skill content")
+	}
+	// The lookup must return the directory it resolved so the directory
+	// line and any relative-reference resolution agree.
+	wantDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(skill.Path); got != wantDir {
+		t.Errorf("resolved skill dir = %q, want %q", got, wantDir)
+	}
+}
+
+func TestToCatOutputBuiltin(t *testing.T) {
+	// Sandbox HOME so filesystem overrides can't shadow the built-in.
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	skill, content, err := FindByName("schedule", t.TempDir())
+	if err != nil {
+		t.Fatalf("FindByName(schedule): %v", err)
+	}
+	out := ToCatOutput(skill, content)
+	if out != content {
+		t.Errorf("ToCatOutput for built-in = %q, want verbatim %q", out, content)
+	}
+	if strings.Contains(out, "skill directory:") {
+		t.Error("built-in output must not contain a directory line")
 	}
 }
 
@@ -893,7 +996,7 @@ func TestEmptySkillMDSuppressesBuiltin(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
 
 	// FindByName should report the skill as disabled.
-	_, err := FindByName("schedule", t.TempDir())
+	_, _, err := FindByName("schedule", t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for suppressed built-in skill")
 	}
@@ -926,7 +1029,7 @@ func TestMalformedSkillMDShowsParseError(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
 
 	// FindByName should return the parse error, not a generic "disabled" message.
-	_, err := FindByName("schedule", t.TempDir())
+	_, _, err := FindByName("schedule", t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for malformed SKILL.md")
 	}
@@ -956,7 +1059,7 @@ func TestFilesystemSkillOverridesBuiltin(t *testing.T) {
 	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
 
 	// FindByName should return the filesystem version, not the built-in.
-	content, err := FindByName("schedule", t.TempDir())
+	_, content, err := FindByName("schedule", t.TempDir())
 	if err != nil {
 		t.Fatalf("FindByName(schedule): %v", err)
 	}

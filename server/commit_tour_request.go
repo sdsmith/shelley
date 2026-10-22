@@ -441,11 +441,11 @@ func (s *Server) runCommitTourJob(ctx context.Context, job *commitTourJob, resum
 	if resume && s.commitTourRun == nil {
 		err = s.resumeCommitTourSubagent(ctx, job)
 	} else {
-		skill, skillErr := skills.FindByName("commit-tour", job.target.Worktree)
+		_, content, skillErr := skills.FindByName("commit-tour", job.target.Worktree)
 		if skillErr != nil {
 			err = fmt.Errorf("load commit-tour skill: %w", skillErr)
 		} else {
-			prompt := commitTourPrompt(job.target, skill)
+			prompt := commitTourPrompt(job.target, content)
 			if s.commitTourRun != nil {
 				err = s.commitTourRun(ctx, job.childID, job.target, prompt, job.model, job.reasoning)
 			} else {

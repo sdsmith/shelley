@@ -409,6 +409,18 @@ func stringScalarYAMLValueVisit(node *yaml.Node, visiting map[*yaml.Node]bool, r
 	}
 }
 
+// ToCatOutput formats the output of `shelley skill cat`: for filesystem
+// skills (skill.Path set, absolute — as guaranteed by FindByName) it
+// prepends one HTML comment line naming the skill's resolved directory so
+// relative references can be resolved against it; built-in skills (empty
+// Path) get their content verbatim.
+func ToCatOutput(skill Skill, content string) string {
+	if skill.Path == "" {
+		return content
+	}
+	return fmt.Sprintf("<!-- skill directory: %s — resolve this skill's relative references against this directory -->\n%s", filepath.Dir(skill.Path), content)
+}
+
 // ToPromptXML generates the <available_skills> XML block for system prompts.
 func ToPromptXML(skills []Skill) string {
 	if len(skills) == 0 {
@@ -682,13 +694,16 @@ func matchWhen(when string, env Env) bool {
 	}
 }
 
-// FindByName looks up a skill by name and returns its raw SKILL.md content.
+// FindByName looks up a skill by name and returns the resolved skill
+// alongside its raw SKILL.md content. Filesystem skills come back with Path
+// (and Source) set to the absolute location of the resolved SKILL.md file;
+// built-in skills have an empty Path.
 //
 // Filesystem skills take priority: if a SKILL.md exists on the filesystem
 // for the given name it is returned, even if a built-in skill with the
 // same name exists. An empty filesystem SKILL.md suppresses the built-in
 // skill — this lets users delete built-in skills they don't want.
-func FindByName(name, workingDir string) (string, error) {
+func FindByName(name, workingDir string) (Skill, string, error) {
 	gitRoot := findGitRoot(workingDir)
 	dirs := DefaultDirs()
 	dirs = append(dirs, ProjectSkillsDirs(workingDir, gitRoot)...)
@@ -696,21 +711,13 @@ func FindByName(name, workingDir string) (string, error) {
 	// Filesystem first: check directory-based discovery, then tree discovery.
 	for _, s := range Discover(dirs) {
 		if s.Name == name {
-			content, err := os.ReadFile(s.Path)
-			if err != nil {
-				return "", fmt.Errorf("reading skill %q: %w", name, err)
-			}
-			return string(content), nil
+			return readFSSkill(s, name)
 		}
 	}
 	treeSkills, treeNames := DiscoverInTree(workingDir, gitRoot)
 	for _, s := range treeSkills {
 		if s.Name == name {
-			content, err := os.ReadFile(s.Path)
-			if err != nil {
-				return "", fmt.Errorf("reading skill %q: %w", name, err)
-			}
-			return string(content), nil
+			return readFSSkill(s, name)
 		}
 	}
 
@@ -728,13 +735,13 @@ func FindByName(name, workingDir string) (string, error) {
 			if path := findSkillMD(filepath.Join(dir, name)); path != "" {
 				if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
 					if _, parseErr := Parse(path); parseErr != nil {
-						return "", fmt.Errorf("skill %q (%s): %w", name, path, parseErr)
+						return Skill{}, "", fmt.Errorf("skill %q (%s): %w", name, path, parseErr)
 					}
 				}
 				break
 			}
 		}
-		return "", fmt.Errorf("skill %q is disabled", name)
+		return Skill{}, "", fmt.Errorf("skill %q is disabled", name)
 	}
 
 	// Fall back to built-in skills.
@@ -742,13 +749,33 @@ func FindByName(name, workingDir string) (string, error) {
 		if s.Name == name {
 			data, err := builtinFS.ReadFile("builtin/" + name + "/SKILL.md")
 			if err != nil {
-				return "", fmt.Errorf("reading built-in skill %q: %w", name, err)
+				return Skill{}, "", fmt.Errorf("reading built-in skill %q: %w", name, err)
 			}
-			return string(data), nil
+			return s, string(data), nil
 		}
 	}
 
-	return "", fmt.Errorf("skill %q not found", name)
+	return Skill{}, "", fmt.Errorf("skill %q not found", name)
+}
+
+// readFSSkill returns a filesystem skill with an absolute Path and Source,
+// alongside its raw SKILL.md content. Discovery can yield relative paths
+// (tree discovery walks from the working directory); absoluteness is
+// normalized here so every caller sees the directory that was resolved.
+func readFSSkill(s Skill, name string) (Skill, string, error) {
+	if !filepath.IsAbs(s.Path) {
+		abs, err := filepath.Abs(s.Path)
+		if err != nil {
+			return Skill{}, "", fmt.Errorf("resolving skill %q: %w", name, err)
+		}
+		s.Path = abs
+		s.Source = abs
+	}
+	content, err := os.ReadFile(s.Path)
+	if err != nil {
+		return Skill{}, "", fmt.Errorf("reading skill %q: %w", name, err)
+	}
+	return s, string(content), nil
 }
 
 // dirSkillNames returns the set of skill names found in the given skill

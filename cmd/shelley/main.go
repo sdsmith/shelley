@@ -137,12 +137,12 @@ func runSkill(args []string) {
 			fmt.Fprintf(os.Stderr, "Usage: shelley skill cat SKILL_NAME\n")
 			os.Exit(1)
 		}
-		content, err := skills.FindByName(args[1], wd)
+		skill, content, err := skills.FindByName(args[1], wd)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Print(content)
+		fmt.Print(skills.ToCatOutput(skill, content))
 
 	case "ls":
 		all := skills.ListAll(wd, "")
