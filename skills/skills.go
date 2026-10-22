@@ -410,10 +410,12 @@ func stringScalarYAMLValueVisit(node *yaml.Node, visiting map[*yaml.Node]bool, r
 }
 
 // ToCatOutput formats the output of `shelley skill cat`: for filesystem
-// skills (skill.Path set, absolute — as guaranteed by FindByName) it
-// prepends one HTML comment line naming the skill's resolved directory so
-// relative references can be resolved against it; built-in skills (empty
-// Path) get their content verbatim.
+// skills (skill.Path set) it prepends one HTML comment line naming the
+// skill's resolved directory so relative references can be resolved
+// against it; built-in skills (empty Path) get their content verbatim.
+//
+// It does not absolutize skill.Path: callers must pass a Skill returned
+// from FindByName, whose Path is absolute.
 func ToCatOutput(skill Skill, content string) string {
 	if skill.Path == "" {
 		return content
@@ -711,13 +713,13 @@ func FindByName(name, workingDir string) (Skill, string, error) {
 	// Filesystem first: check directory-based discovery, then tree discovery.
 	for _, s := range Discover(dirs) {
 		if s.Name == name {
-			return readFSSkill(s, name)
+			return readFSSkill(s)
 		}
 	}
 	treeSkills, treeNames := DiscoverInTree(workingDir, gitRoot)
 	for _, s := range treeSkills {
 		if s.Name == name {
-			return readFSSkill(s, name)
+			return readFSSkill(s)
 		}
 	}
 
@@ -762,18 +764,20 @@ func FindByName(name, workingDir string) (Skill, string, error) {
 // alongside its raw SKILL.md content. Discovery can yield relative paths
 // (tree discovery walks from the working directory); absoluteness is
 // normalized here so every caller sees the directory that was resolved.
-func readFSSkill(s Skill, name string) (Skill, string, error) {
+// Every relative path this package produces is cwd-relative, so
+// filepath.Abs with no explicit base is correct.
+func readFSSkill(s Skill) (Skill, string, error) {
 	if !filepath.IsAbs(s.Path) {
 		abs, err := filepath.Abs(s.Path)
 		if err != nil {
-			return Skill{}, "", fmt.Errorf("resolving skill %q: %w", name, err)
+			return Skill{}, "", fmt.Errorf("resolving skill %q: %w", s.Name, err)
 		}
 		s.Path = abs
 		s.Source = abs
 	}
 	content, err := os.ReadFile(s.Path)
 	if err != nil {
-		return Skill{}, "", fmt.Errorf("reading skill %q: %w", name, err)
+		return Skill{}, "", fmt.Errorf("reading skill %q: %w", s.Name, err)
 	}
 	return s, string(content), nil
 }

@@ -871,18 +871,8 @@ func TestFindByNameAbsolutePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpHome)
-	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
-
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(tmpHome); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(oldWd) })
+	t.Setenv("HOME", tmpHome)
+	t.Chdir(tmpHome)
 
 	skill, _, err := FindByName("my-fs-skill", ".")
 	if err != nil {
@@ -890,6 +880,17 @@ func TestFindByNameAbsolutePath(t *testing.T) {
 	}
 	if !filepath.IsAbs(skill.Path) {
 		t.Errorf("skill.Path = %q, want absolute", skill.Path)
+	}
+	gotDir, err := filepath.EvalSymlinks(filepath.Dir(skill.Path))
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", filepath.Dir(skill.Path), err)
+	}
+	wantDir, err := filepath.EvalSymlinks(skillDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", skillDir, err)
+	}
+	if gotDir != wantDir {
+		t.Errorf("skill.Path dir = %q, want %q", gotDir, wantDir)
 	}
 }
 
